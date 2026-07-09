@@ -41,6 +41,18 @@ struct Paragraph {
     std::vector<Run> runs;
 };
 
+// One entry per Image run, in document order, with the atom index (the
+// position of its U+FFFC placeholder within PlainText()/Length()'s index
+// space) it occupies — for hosts that render resolved bitmaps inline via
+// IDWriteTextLayout::SetInlineObject at that position.
+struct ImageAtomInfo {
+    size_t atom_index = 0;
+    std::wstring uri;
+    std::wstring alt_text;
+    float display_width = 0.0f;
+    float display_height = 0.0f;
+};
+
 class Document {
 public:
     Document();
@@ -54,6 +66,7 @@ public:
 
     void SetPlainText(std::wstring_view text);
     std::wstring PlainText() const;
+    std::vector<ImageAtomInfo> ImageAtoms() const;
 
     void InsertText(size_t position, std::wstring_view text);
     void InsertImage(size_t position, std::wstring uri, std::wstring alt_text, float width, float height);

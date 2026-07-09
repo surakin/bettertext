@@ -500,6 +500,88 @@ std::wstring ComposedDisplayText(const ControlState* state, size_t* out_composit
     return text;
 }
 
+// Draws a resolved image bitmap inline at the position DirectWrite assigns
+// its host atom's U+FFFC placeholder. One instance per image-run-per-layout
+// build (layouts are rebuilt often; construction is a cheap heap alloc for
+// what's typically a handful of custom-emoji atoms). Mirrors the real
+// COM refcounting SingleFileFontEnumerator already uses elsewhere in this
+// library — DirectWrite AddRefs on SetInlineObject and Releases when the
+// layout is done with it, so this must actually free itself at refcount 0.
+class BetterTextInlineImage final : public IDWriteInlineObject {
+public:
+    BetterTextInlineImage(ID2D1DeviceContext* context, ID2D1Bitmap* bitmap, float width, float height)
+        : context_(context), bitmap_(bitmap), width_(width), height_(height) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) {
+            return E_POINTER;
+        }
+        if (IsEqualGUID(iid, __uuidof(IUnknown)) || IsEqualGUID(iid, __uuidof(IDWriteInlineObject))) {
+            *object = static_cast<IDWriteInlineObject*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(InterlockedIncrement(&ref_count_));
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG count = static_cast<ULONG>(InterlockedDecrement(&ref_count_));
+        if (count == 0) {
+            delete this;
+        }
+        return count;
+    }
+
+    HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT origin_x, FLOAT origin_y, BOOL, BOOL,
+                                    IUnknown*) override {
+        context_->DrawBitmap(
+            bitmap_.Get(), D2D1::RectF(origin_x, origin_y, origin_x + width_, origin_y + height_), 1.0f,
+            D2D1_INTERPOLATION_MODE_LINEAR, nullptr);
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* metrics) override {
+        if (!metrics) {
+            return E_POINTER;
+        }
+        metrics->width = width_;
+        metrics->height = height_;
+        metrics->baseline = height_;
+        metrics->supportsSideways = FALSE;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetOverhangMetrics(DWRITE_OVERHANG_METRICS* overhangs) override {
+        if (!overhangs) {
+            return E_POINTER;
+        }
+        *overhangs = DWRITE_OVERHANG_METRICS{ 0.0f, 0.0f, 0.0f, 0.0f };
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetBreakConditions(DWRITE_BREAK_CONDITION* before,
+                                                  DWRITE_BREAK_CONDITION* after) override {
+        if (!before || !after) {
+            return E_POINTER;
+        }
+        *before = DWRITE_BREAK_CONDITION_NEUTRAL;
+        *after = DWRITE_BREAK_CONDITION_NEUTRAL;
+        return S_OK;
+    }
+
+private:
+    LONG ref_count_ = 1;
+    ID2D1DeviceContext* context_ = nullptr;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap_;
+    float width_ = 0.0f;
+    float height_ = 0.0f;
+};
+
 HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
     *layout = nullptr;
     HRESULT hr = EnsureTextFormat(state);
@@ -529,6 +611,26 @@ HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
     if (SUCCEEDED(hr)) {
         ApplyEmojiFallback(state, *layout, text);
     }
+    if (SUCCEEDED(hr) && !state->resolved_images.empty()) {
+        for (const auto& info : state->document.ImageAtoms()) {
+            auto found = state->resolved_images.find(info.uri);
+            if (found == state->resolved_images.end() || !found->second) {
+                continue;  // not resolved yet — keeps rendering as U+FFFC tofu
+            }
+            // An in-progress IME composition splices text in ahead of this
+            // atom's index — shift accordingly so the image object lands on
+            // the right character of the *displayed* layout, not the
+            // document's own (unspliced) index space.
+            size_t index = info.atom_index;
+            if (composition_len > 0 && index >= composition_start) {
+                index += composition_len;
+            }
+            auto* inline_object = new BetterTextInlineImage(
+                state->device_context.Get(), found->second.Get(), info.display_width, info.display_height);
+            (*layout)->SetInlineObject(DWRITE_TEXT_RANGE{ static_cast<UINT32>(index), 1 }, inline_object);
+            inline_object->Release();  // SetInlineObject took its own reference
+        }
+    }
     return hr;
 }
 
@@ -550,6 +652,15 @@ void UpdateScrollInfo(ControlState* state) {
     const int page = std::max<LONG>(1, rect.bottom - rect.top);
     const int max_pos = std::max(0, static_cast<int>(content_height) - page);
     state->scroll_y = std::clamp(state->scroll_y, 0.0f, static_cast<float>(max_pos));
+
+    // SetScrollInfo auto-installs a vertical scrollbar (reserving its gutter
+    // width) even though the window was never created with WS_VSCROLL — it
+    // isn't gated on whether scrolling is actually wanted. Mouse-wheel
+    // scrolling (WM_MOUSEWHEEL) works independently of this, so skipping the
+    // call entirely when the caller hasn't opted in costs nothing.
+    if (!state->show_scrollbar) {
+        return;
+    }
 
     SCROLLINFO info{};
     info.cbSize = sizeof(info);
@@ -1594,6 +1705,35 @@ bool GetCaretRect(ControlState* state, RECT* out) {
     out->right = static_cast<LONG>(left + 1.0f);
     out->bottom = static_cast<LONG>(top + metrics.height);
     return true;
+}
+
+void StoreResolvedImage(ControlState* state, const wchar_t* uri, IWICBitmapSource* bitmap) {
+    if (!state || !uri || !bitmap || FAILED(EnsureFactories(state))) {
+        return;
+    }
+    if (!state->wic_factory) {
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                          IID_PPV_ARGS(state->wic_factory.GetAddressOf()));
+    }
+    if (!state->wic_factory) {
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+    if (FAILED(state->wic_factory->CreateFormatConverter(converter.GetAddressOf()))) {
+        return;
+    }
+    if (FAILED(converter->Initialize(bitmap, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                      nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> d2d_bitmap;
+    if (FAILED(state->device_context->CreateBitmapFromWicBitmap(converter.Get(), nullptr,
+                                                                  d2d_bitmap.GetAddressOf()))) {
+        return;
+    }
+    state->resolved_images[uri] = std::move(d2d_bitmap);
 }
 
 } // namespace bettertext

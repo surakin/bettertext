@@ -261,6 +261,26 @@ std::wstring Document::PlainText() const {
     return output;
 }
 
+std::vector<ImageAtomInfo> Document::ImageAtoms() const {
+    // Mirrors PlainText()'s own traversal (paragraphs -> runs, one Break
+    // atom between paragraphs) so atom_index always lines up with the
+    // U+FFFC position PlainText() would produce for the same image run.
+    std::vector<ImageAtomInfo> result;
+    size_t index = 0;
+    for (size_t p = 0; p < paragraphs_.size(); ++p) {
+        for (const Run& run : paragraphs_[p].runs) {
+            if (run.kind == RunKind::Image) {
+                result.push_back({index, run.uri, run.alt_text, run.display_width, run.display_height});
+            }
+            index += run.Length();
+        }
+        if (p + 1 < paragraphs_.size()) {
+            ++index;  // paragraph-separator Break atom
+        }
+    }
+    return result;
+}
+
 void Document::InsertText(size_t position, std::wstring_view text) {
     ReplaceRange(position, 0, text);
 }

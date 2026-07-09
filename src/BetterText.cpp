@@ -360,10 +360,14 @@ BOOL BetterTextSetImageProvider(HWND control, IBetterTextImageProvider* provider
     return TRUE;
 }
 
-BOOL BetterTextNotifyImageResolved(HWND control, uint64_t, const wchar_t*, IWICBitmapSource*, HRESULT) {
+BOOL BetterTextNotifyImageResolved(HWND control, uint64_t, const wchar_t* uri, IWICBitmapSource* bitmap,
+                                    HRESULT status) {
     ControlState* state = bettertext::GetState(control);
     if (!state) {
         return FALSE;
+    }
+    if (SUCCEEDED(status) && uri && bitmap) {
+        bettertext::StoreResolvedImage(state, uri, bitmap);
     }
     bettertext::InvalidateBetterText(state);
     return TRUE;
@@ -454,6 +458,18 @@ BOOL BetterTextSetPasswordMode(HWND control, BOOL enabled) {
 BOOL BetterTextGetCaretRect(HWND control, RECT* out_rect) {
     ControlState* state = bettertext::GetState(control);
     return bettertext::GetCaretRect(state, out_rect) ? TRUE : FALSE;
+}
+
+BOOL BetterTextSetScrollBarVisible(HWND control, BOOL visible) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state) {
+        return FALSE;
+    }
+    state->show_scrollbar = visible != FALSE;
+    if (!state->show_scrollbar && state->hwnd) {
+        ShowScrollBar(state->hwnd, SB_VERT, FALSE);
+    }
+    return TRUE;
 }
 
 } // extern "C"

@@ -9,6 +9,7 @@
 #include <dxgi1_2.h>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <wrl/client.h>
 
@@ -29,6 +30,10 @@ struct ControlState {
     bool single_line = false;
     bool submit_on_enter = false;
     bool password_mode = false;
+    // Off by default — SetScrollInfo would otherwise auto-install a
+    // scrollbar gutter regardless of whether the caller wants one. Mouse
+    // wheel scrolling works independently of this flag.
+    bool show_scrollbar = false;
     std::wstring placeholder;
 
     BetterTextNotifyProc notify_callback = nullptr;
@@ -74,6 +79,13 @@ struct ControlState {
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> placeholder_brush;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> text_format;
     Microsoft::WRL::ComPtr<IDWriteFontCollection> emoji_font_collection;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic_factory;
+
+    // Bitmaps resolved via IBetterTextImageProvider, keyed by the URI passed
+    // to BetterTextInsertImageUri / BetterTextNotifyImageResolved. Multiple
+    // image runs sharing a URI (e.g. the same custom emoji inserted twice)
+    // share one entry.
+    std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> resolved_images;
 
     void PushUndo();
     void ClearRedo();
@@ -92,5 +104,6 @@ void NotifyChanged(ControlState* state);
 void NotifySubmit(ControlState* state);
 float ComputeContentHeight(ControlState* state);
 bool GetCaretRect(ControlState* state, RECT* out);
+void StoreResolvedImage(ControlState* state, const wchar_t* uri, IWICBitmapSource* bitmap);
 
 } // namespace bettertext

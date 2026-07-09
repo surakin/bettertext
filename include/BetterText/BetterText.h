@@ -127,6 +127,11 @@ BETTERTEXT_API BOOL BetterTextSetPasswordMode(HWND control, BOOL enabled);
 // autocomplete, spellcheck menu, …) relative to the caret.
 BETTERTEXT_API BOOL BetterTextGetCaretRect(HWND control, RECT* out_rect);
 
+// Off by default (see BetterTextInternal.h for why). When turned off after
+// having been on, any scrollbar Windows already auto-installed is retracted
+// immediately rather than waiting for the next size/paint pass.
+BETTERTEXT_API BOOL BetterTextSetScrollBarVisible(HWND control, BOOL visible);
+
 #ifdef __cplusplus
 }
 #endif
