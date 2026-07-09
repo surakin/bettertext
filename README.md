@@ -15,6 +15,8 @@ This first implementation provides:
 
 WebView2, Chromium, Qt, and browser-based editors are intentionally not used.
 
+This was created to fix the text input fields in [Tesseract](https://surakin.github.io/tesseract), because at some point I got tired of fighting against RichText.
+
 ## Build
 
 ```powershell
