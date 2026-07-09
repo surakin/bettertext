@@ -19,6 +19,11 @@ void ControlState::ClearRedo() {
     redo_stack.clear();
 }
 
+void ControlState::ResetVerticalCaretX() {
+    vertical_caret_x_valid = false;
+    vertical_caret_x = 0.0f;
+}
+
 void ControlState::ClampSelection() {
     const int64_t length = static_cast<int64_t>(document.Length());
     selection.anchor = std::clamp<int64_t>(selection.anchor, 0, length);
@@ -97,6 +102,7 @@ BOOL BetterTextSetText(HWND control, const wchar_t* text) {
     state->ClearRedo();
     state->document.SetPlainText(text ? text : L"");
     state->selection = { 0, 0 };
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -130,6 +136,7 @@ BOOL BetterTextSetDocumentJson(HWND control, const wchar_t* json) {
     state->ClearRedo();
     state->document = std::move(next);
     state->selection = { 0, 0 };
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -163,6 +170,7 @@ BOOL BetterTextSetHtml(HWND control, const wchar_t* html) {
     state->ClearRedo();
     state->document = std::move(next);
     state->selection = { 0, 0 };
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -195,6 +203,7 @@ BOOL BetterTextInsertText(HWND control, const wchar_t* text) {
     const int64_t caret = start + static_cast<int64_t>(wcslen(text));
     state->selection = { caret, caret };
     state->ClampSelection();
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -211,6 +220,7 @@ BOOL BetterTextInsertImageUri(HWND control, const wchar_t* uri, const wchar_t* a
     state->document.DeleteRange(static_cast<size_t>(start), static_cast<size_t>(end - start));
     state->document.InsertImage(static_cast<size_t>(start), uri, alt_text ? alt_text : L"", display_width, display_height);
     state->selection = { start + 1, start + 1 };
+    state->ResetVerticalCaretX();
     if (state->image_provider) {
         const uint64_t request_id = state->next_image_request++;
         state->image_provider->ResolveImageUri(control, request_id, uri, display_width, display_height);
@@ -226,6 +236,7 @@ BOOL BetterTextSetSelection(HWND control, int64_t anchor, int64_t caret) {
     }
     state->selection = { anchor, caret };
     state->ClampSelection();
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -248,6 +259,7 @@ BOOL BetterTextUndo(HWND control) {
     state->document = state->undo_stack.back();
     state->undo_stack.pop_back();
     state->ClampSelection();
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -261,6 +273,7 @@ BOOL BetterTextRedo(HWND control) {
     state->document = state->redo_stack.back();
     state->redo_stack.pop_back();
     state->ClampSelection();
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -317,6 +330,7 @@ BOOL BetterTextSetDefaultTextStyle(HWND control, const BetterTextTextStyle* styl
     state->default_style = bettertext::ToInternalStyle(style, state->default_style);
     state->document.SetDefaultStyle(state->default_style);
     state->text_format.Reset();
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }
@@ -364,6 +378,8 @@ BOOL BetterTextSetFontProvider(HWND control, IBetterTextFontProvider* provider) 
     }
     state->font_provider = provider;
     state->text_format.Reset();
+    state->emoji_font_collection.Reset();
+    state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }

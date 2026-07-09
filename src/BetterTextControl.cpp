@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <imm.h>
 #include <strsafe.h>
+#include <vector>
 #include <windowsx.h>
 
 namespace bettertext {
@@ -36,9 +37,41 @@ RECT ClientRect(HWND hwnd) {
     return rect;
 }
 
+TextStyle SystemDefaultTextStyle(HWND hwnd) {
+    TextStyle style;
+
+    NONCLIENTMETRICSW metrics{};
+    metrics.cbSize = sizeof(metrics);
+    if (!SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, metrics.cbSize, &metrics, 0)) {
+        return style;
+    }
+
+    const LOGFONTW& font = metrics.lfMessageFont;
+    if (font.lfFaceName[0]) {
+        style.font_family = font.lfFaceName;
+    }
+    if (font.lfWeight > 0) {
+        style.font_weight = font.lfWeight;
+    }
+    style.italic = font.lfItalic != FALSE;
+
+    const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : USER_DEFAULT_SCREEN_DPI;
+    const LONG height = font.lfHeight < 0 ? -font.lfHeight : font.lfHeight;
+    if (height > 0 && dpi > 0) {
+        style.font_size = static_cast<float>(height) * 96.0f / static_cast<float>(dpi);
+    }
+
+    return style;
+}
+
 HRESULT EnsureFactories(ControlState* state) {
     if (!state->d2d_factory) {
-        HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, state->d2d_factory.GetAddressOf());
+        D2D1_FACTORY_OPTIONS options{};
+        HRESULT hr = D2D1CreateFactory(
+            D2D1_FACTORY_TYPE_SINGLE_THREADED,
+            __uuidof(ID2D1Factory1),
+            &options,
+            reinterpret_cast<void**>(state->d2d_factory.GetAddressOf()));
         if (FAILED(hr)) {
             return hr;
         }
@@ -51,8 +84,151 @@ HRESULT EnsureFactories(ControlState* state) {
         if (FAILED(hr)) {
             return hr;
         }
+        state->dwrite_factory.As(&state->dwrite_factory4);
+    }
+    if (!state->d3d_device) {
+        const D3D_FEATURE_LEVEL levels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+        };
+        D3D_FEATURE_LEVEL actual_level{};
+        HRESULT hr = D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            levels,
+            ARRAYSIZE(levels),
+            D3D11_SDK_VERSION,
+            state->d3d_device.GetAddressOf(),
+            &actual_level,
+            nullptr);
+        if (FAILED(hr)) {
+            hr = D3D11CreateDevice(
+                nullptr,
+                D3D_DRIVER_TYPE_WARP,
+                nullptr,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                levels,
+                ARRAYSIZE(levels),
+                D3D11_SDK_VERSION,
+                state->d3d_device.GetAddressOf(),
+                &actual_level,
+                nullptr);
+        }
+        if (FAILED(hr)) {
+            return hr;
+        }
+        hr = state->d3d_device.As(&state->dxgi_device);
+        if (FAILED(hr)) {
+            return hr;
+        }
+    }
+    if (!state->d2d_device) {
+        HRESULT hr = state->d2d_factory->CreateDevice(state->dxgi_device.Get(), state->d2d_device.GetAddressOf());
+        if (FAILED(hr)) {
+            return hr;
+        }
+    }
+    if (!state->device_context) {
+        HRESULT hr = state->d2d_device->CreateDeviceContext(
+            D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+            state->device_context.GetAddressOf());
+        if (FAILED(hr)) {
+            return hr;
+        }
+        state->device_context.As(&state->device_context4);
     }
     return S_OK;
+}
+
+HRESULT CreateSwapChain(ControlState* state) {
+    RECT rect = ClientRect(state->hwnd);
+    const UINT width = static_cast<UINT>(std::max<LONG>(1, rect.right - rect.left));
+    const UINT height = static_cast<UINT>(std::max<LONG>(1, rect.bottom - rect.top));
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    HRESULT hr = state->dxgi_device->GetAdapter(adapter.GetAddressOf());
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
+    hr = adapter->GetParent(__uuidof(IDXGIFactory2), reinterpret_cast<void**>(factory.GetAddressOf()));
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    desc.Width = width;
+    desc.Height = height;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.Stereo = FALSE;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2;
+    desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+
+    hr = factory->CreateSwapChainForHwnd(
+        state->d3d_device.Get(),
+        state->hwnd,
+        &desc,
+        nullptr,
+        nullptr,
+        state->swap_chain.GetAddressOf());
+    if (SUCCEEDED(hr)) {
+        factory->MakeWindowAssociation(state->hwnd, DXGI_MWA_NO_ALT_ENTER);
+    }
+    return hr;
+}
+
+HRESULT CreateTargetBitmap(ControlState* state) {
+    Microsoft::WRL::ComPtr<IDXGISurface> surface;
+    HRESULT hr = state->swap_chain->GetBuffer(0, __uuidof(IDXGISurface), reinterpret_cast<void**>(surface.GetAddressOf()));
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    const float dpi = static_cast<float>(GetDpiForWindow(state->hwnd));
+    state->device_context->SetDpi(dpi, dpi);
+
+    const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(
+        D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
+        dpi,
+        dpi);
+    hr = state->device_context->CreateBitmapFromDxgiSurface(
+        surface.Get(),
+        &properties,
+        state->target_bitmap.GetAddressOf());
+    if (FAILED(hr)) {
+        return hr;
+    }
+    state->device_context->SetTarget(state->target_bitmap.Get());
+    return S_OK;
+}
+
+HRESULT ResizeRenderTarget(ControlState* state, UINT width, UINT height) {
+    if (!state || !state->swap_chain) {
+        return S_OK;
+    }
+
+    state->device_context->SetTarget(nullptr);
+    state->target_bitmap.Reset();
+
+    width = std::max<UINT>(1, width);
+    height = std::max<UINT>(1, height);
+    HRESULT hr = state->swap_chain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) {
+        ResetRenderResources(state);
+        return hr;
+    }
+    return CreateTargetBitmap(state);
 }
 
 HRESULT EnsureRenderTarget(ControlState* state) {
@@ -60,28 +236,27 @@ HRESULT EnsureRenderTarget(ControlState* state) {
     if (FAILED(hr)) {
         return hr;
     }
-    if (!state->render_target) {
-        RECT rect = ClientRect(state->hwnd);
-        const D2D1_SIZE_U size = D2D1::SizeU(
-            static_cast<UINT32>(std::max<LONG>(1, rect.right - rect.left)),
-            static_cast<UINT32>(std::max<LONG>(1, rect.bottom - rect.top)));
-        hr = state->d2d_factory->CreateHwndRenderTarget(
-            D2D1::RenderTargetProperties(),
-            D2D1::HwndRenderTargetProperties(state->hwnd, size),
-            state->render_target.GetAddressOf());
+    if (!state->swap_chain) {
+        hr = CreateSwapChain(state);
+        if (FAILED(hr)) {
+            return hr;
+        }
+    }
+    if (!state->target_bitmap) {
+        hr = CreateTargetBitmap(state);
         if (FAILED(hr)) {
             return hr;
         }
     }
 
     if (!state->foreground_brush) {
-        state->render_target->CreateSolidColorBrush(Color(state->theme.foreground_rgba), state->foreground_brush.GetAddressOf());
+        state->device_context->CreateSolidColorBrush(Color(state->theme.foreground_rgba), state->foreground_brush.GetAddressOf());
     }
     if (!state->selection_brush) {
-        state->render_target->CreateSolidColorBrush(Color(state->theme.selection_rgba), state->selection_brush.GetAddressOf());
+        state->device_context->CreateSolidColorBrush(Color(state->theme.selection_rgba), state->selection_brush.GetAddressOf());
     }
     if (!state->caret_brush) {
-        state->render_target->CreateSolidColorBrush(Color(state->theme.caret_rgba), state->caret_brush.GetAddressOf());
+        state->device_context->CreateSolidColorBrush(Color(state->theme.caret_rgba), state->caret_brush.GetAddressOf());
     }
     return S_OK;
 }
@@ -95,17 +270,9 @@ HRESULT EnsureTextFormat(ControlState* state) {
         return S_OK;
     }
 
-    Microsoft::WRL::ComPtr<IDWriteFontCollection> collection;
-    IDWriteFontCollection* collection_raw = nullptr;
-    if (state->font_provider &&
-        SUCCEEDED(state->font_provider->CreateFontCollection(state->dwrite_factory.Get(), &collection_raw)) &&
-        collection_raw) {
-        collection.Attach(collection_raw);
-    }
-
     hr = state->dwrite_factory->CreateTextFormat(
         state->default_style.font_family.c_str(),
-        collection.Get(),
+        nullptr,
         static_cast<DWRITE_FONT_WEIGHT>(state->default_style.font_weight),
         state->default_style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL,
@@ -117,6 +284,184 @@ HRESULT EnsureTextFormat(ControlState* state) {
         state->text_format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     }
     return hr;
+}
+
+bool IsHighSurrogate(wchar_t ch) {
+    return ch >= 0xd800 && ch <= 0xdbff;
+}
+
+bool IsLowSurrogate(wchar_t ch) {
+    return ch >= 0xdc00 && ch <= 0xdfff;
+}
+
+uint32_t DecodeCodePoint(const std::wstring& text, size_t index, size_t* length) {
+    *length = 1;
+    const wchar_t lead = text[index];
+    if (IsHighSurrogate(lead) && index + 1 < text.size() && IsLowSurrogate(text[index + 1])) {
+        *length = 2;
+        return 0x10000u +
+            ((static_cast<uint32_t>(lead) - 0xd800u) << 10) +
+            (static_cast<uint32_t>(text[index + 1]) - 0xdc00u);
+    }
+    return static_cast<uint32_t>(lead);
+}
+
+bool IsEmojiBase(uint32_t codepoint) {
+    return codepoint == 0x00a9 ||
+        codepoint == 0x00ae ||
+        codepoint == 0x203c ||
+        codepoint == 0x2049 ||
+        codepoint == 0x2122 ||
+        codepoint == 0x2139 ||
+        (codepoint >= 0x2194 && codepoint <= 0x21aa) ||
+        (codepoint >= 0x231a && codepoint <= 0x231b) ||
+        codepoint == 0x2328 ||
+        codepoint == 0x23cf ||
+        (codepoint >= 0x23e9 && codepoint <= 0x23f3) ||
+        (codepoint >= 0x23f8 && codepoint <= 0x23fa) ||
+        codepoint == 0x24c2 ||
+        (codepoint >= 0x25aa && codepoint <= 0x25ab) ||
+        codepoint == 0x25b6 ||
+        codepoint == 0x25c0 ||
+        (codepoint >= 0x25fb && codepoint <= 0x25fe) ||
+        (codepoint >= 0x2600 && codepoint <= 0x27bf) ||
+        (codepoint >= 0x2934 && codepoint <= 0x2935) ||
+        (codepoint >= 0x2b05 && codepoint <= 0x2b55) ||
+        codepoint == 0x3030 ||
+        codepoint == 0x303d ||
+        codepoint == 0x3297 ||
+        codepoint == 0x3299 ||
+        (codepoint >= 0x1f000 && codepoint <= 0x1faff);
+}
+
+bool IsRegionalIndicator(uint32_t codepoint) {
+    return codepoint >= 0x1f1e6 && codepoint <= 0x1f1ff;
+}
+
+bool IsEmojiModifier(uint32_t codepoint) {
+    return codepoint == 0xfe0f ||
+        (codepoint >= 0x1f3fb && codepoint <= 0x1f3ff);
+}
+
+bool IsKeycapStarter(uint32_t codepoint) {
+    return codepoint == L'#' || codepoint == L'*' || (codepoint >= L'0' && codepoint <= L'9');
+}
+
+size_t ConsumeEmojiTail(const std::wstring& text, size_t index) {
+    size_t current = index;
+    while (current < text.size()) {
+        size_t length = 0;
+        const uint32_t codepoint = DecodeCodePoint(text, current, &length);
+        if (!IsEmojiModifier(codepoint) && codepoint != 0x20e3) {
+            break;
+        }
+        current += length;
+    }
+    return current;
+}
+
+size_t EmojiRangeLength(const std::wstring& text, size_t index) {
+    size_t length = 0;
+    const uint32_t codepoint = DecodeCodePoint(text, index, &length);
+
+    if (IsKeycapStarter(codepoint)) {
+        size_t current = index + length;
+        if (current < text.size()) {
+            size_t next_length = 0;
+            const uint32_t next = DecodeCodePoint(text, current, &next_length);
+            if (next == 0xfe0f) {
+                current += next_length;
+            }
+        }
+        if (current < text.size()) {
+            size_t next_length = 0;
+            if (DecodeCodePoint(text, current, &next_length) == 0x20e3) {
+                return current + next_length - index;
+            }
+        }
+        return 0;
+    }
+
+    if (!IsEmojiBase(codepoint)) {
+        return 0;
+    }
+
+    size_t current = ConsumeEmojiTail(text, index + length);
+    if (IsRegionalIndicator(codepoint) && current < text.size()) {
+        size_t next_length = 0;
+        const uint32_t next = DecodeCodePoint(text, current, &next_length);
+        if (IsRegionalIndicator(next)) {
+            current = ConsumeEmojiTail(text, current + next_length);
+        }
+    }
+
+    while (current < text.size()) {
+        size_t joiner_length = 0;
+        if (DecodeCodePoint(text, current, &joiner_length) != 0x200d) {
+            break;
+        }
+        const size_t joined = current + joiner_length;
+        if (joined >= text.size()) {
+            break;
+        }
+        size_t joined_length = 0;
+        const uint32_t joined_codepoint = DecodeCodePoint(text, joined, &joined_length);
+        if (!IsEmojiBase(joined_codepoint) && !IsKeycapStarter(joined_codepoint)) {
+            break;
+        }
+        current = ConsumeEmojiTail(text, joined + joined_length);
+    }
+
+    return current - index;
+}
+
+HRESULT EnsureEmojiFontCollection(ControlState* state) {
+    if (!state->font_provider || state->emoji_font_collection) {
+        return S_OK;
+    }
+
+    IDWriteFontCollection* collection = nullptr;
+    HRESULT hr = state->font_provider->CreateFontCollection(state->dwrite_factory.Get(), &collection);
+    if (SUCCEEDED(hr) && collection) {
+        state->emoji_font_collection.Attach(collection);
+    }
+    return hr;
+}
+
+void ApplyEmojiFallback(ControlState* state, IDWriteTextLayout* layout, const std::wstring& text) {
+    if (!layout || text.empty()) {
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteFontCollection> emoji_collection;
+    std::wstring emoji_family = L"Segoe UI Emoji";
+    if (state->font_provider && SUCCEEDED(EnsureEmojiFontCollection(state)) && state->emoji_font_collection) {
+        emoji_collection = state->emoji_font_collection;
+        const wchar_t* provider_family = state->font_provider->EmojiFallbackFamily();
+        if (provider_family && provider_family[0]) {
+            emoji_family = provider_family;
+        }
+    }
+
+    for (size_t i = 0; i < text.size();) {
+        const size_t range_length = EmojiRangeLength(text, i);
+        if (range_length == 0) {
+            size_t codepoint_length = 0;
+            DecodeCodePoint(text, i, &codepoint_length);
+            i += codepoint_length;
+            continue;
+        }
+
+        const DWRITE_TEXT_RANGE range{
+            static_cast<UINT32>(i),
+            static_cast<UINT32>(range_length),
+        };
+        if (emoji_collection) {
+            layout->SetFontCollection(emoji_collection.Get(), range);
+        }
+        layout->SetFontFamilyName(emoji_family.c_str(), range);
+        i += range_length;
+    }
 }
 
 HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
@@ -138,6 +483,9 @@ HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
         layout);
     if (SUCCEEDED(hr) && state->default_style.underline && !text.empty()) {
         (*layout)->SetUnderline(TRUE, DWRITE_TEXT_RANGE{ 0, static_cast<UINT32>(text.size()) });
+    }
+    if (SUCCEEDED(hr)) {
+        ApplyEmojiFallback(state, *layout, text);
     }
     return hr;
 }
@@ -184,6 +532,309 @@ void PaintGdiFallback(ControlState* state) {
     EndPaint(state->hwnd, &ps);
 }
 
+class TextRenderer final : public IDWriteTextRenderer {
+public:
+    explicit TextRenderer(ControlState* state)
+        : state_(state) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) {
+            return E_POINTER;
+        }
+        if (IsEqualGUID(iid, __uuidof(IUnknown)) ||
+            IsEqualGUID(iid, __uuidof(IDWritePixelSnapping)) ||
+            IsEqualGUID(iid, __uuidof(IDWriteTextRenderer))) {
+            *object = static_cast<IDWriteTextRenderer*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return 1;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        return 1;
+    }
+
+    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* is_disabled) override {
+        if (!is_disabled) {
+            return E_POINTER;
+        }
+        *is_disabled = FALSE;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* transform) override {
+        if (!transform) {
+            return E_POINTER;
+        }
+        D2D1_MATRIX_3X2_F d2d_transform{};
+        state_->device_context->GetTransform(&d2d_transform);
+        transform->m11 = d2d_transform._11;
+        transform->m12 = d2d_transform._12;
+        transform->m21 = d2d_transform._21;
+        transform->m22 = d2d_transform._22;
+        transform->dx = d2d_transform._31;
+        transform->dy = d2d_transform._32;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* pixels_per_dip) override {
+        if (!pixels_per_dip) {
+            return E_POINTER;
+        }
+        FLOAT dpi_x = 96.0f;
+        FLOAT dpi_y = 96.0f;
+        state_->device_context->GetDpi(&dpi_x, &dpi_y);
+        *pixels_per_dip = dpi_x / 96.0f;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE DrawGlyphRun(
+        void*,
+        FLOAT baseline_origin_x,
+        FLOAT baseline_origin_y,
+        DWRITE_MEASURING_MODE measuring_mode,
+        const DWRITE_GLYPH_RUN* glyph_run,
+        const DWRITE_GLYPH_RUN_DESCRIPTION* glyph_run_description,
+        IUnknown*) override {
+        if (DrawColorGlyphRun(baseline_origin_x, baseline_origin_y, measuring_mode, glyph_run, glyph_run_description)) {
+            return S_OK;
+        }
+        state_->device_context->DrawGlyphRun(
+            D2D1::Point2F(baseline_origin_x, baseline_origin_y),
+            glyph_run,
+            state_->foreground_brush.Get(),
+            measuring_mode);
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE DrawUnderline(
+        void*,
+        FLOAT baseline_origin_x,
+        FLOAT baseline_origin_y,
+        const DWRITE_UNDERLINE* underline,
+        IUnknown*) override {
+        if (!underline) {
+            return E_INVALIDARG;
+        }
+        const float top = baseline_origin_y + underline->offset;
+        state_->device_context->FillRectangle(
+            D2D1::RectF(
+                baseline_origin_x,
+                top,
+                baseline_origin_x + underline->width,
+                top + underline->thickness),
+            state_->foreground_brush.Get());
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE DrawStrikethrough(
+        void*,
+        FLOAT baseline_origin_x,
+        FLOAT baseline_origin_y,
+        const DWRITE_STRIKETHROUGH* strikethrough,
+        IUnknown*) override {
+        if (!strikethrough) {
+            return E_INVALIDARG;
+        }
+        const float top = baseline_origin_y + strikethrough->offset;
+        state_->device_context->FillRectangle(
+            D2D1::RectF(
+                baseline_origin_x,
+                top,
+                baseline_origin_x + strikethrough->width,
+                top + strikethrough->thickness),
+            state_->foreground_brush.Get());
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE DrawInlineObject(
+        void* client_drawing_context,
+        FLOAT origin_x,
+        FLOAT origin_y,
+        IDWriteInlineObject* inline_object,
+        BOOL is_sideways,
+        BOOL is_right_to_left,
+        IUnknown* client_drawing_effect) override {
+        if (!inline_object) {
+            return E_INVALIDARG;
+        }
+        return inline_object->Draw(
+            client_drawing_context,
+            this,
+            origin_x,
+            origin_y,
+            is_sideways,
+            is_right_to_left,
+            client_drawing_effect);
+    }
+
+private:
+    bool DrawColorGlyphRun(
+        FLOAT baseline_origin_x,
+        FLOAT baseline_origin_y,
+        DWRITE_MEASURING_MODE measuring_mode,
+        const DWRITE_GLYPH_RUN* glyph_run,
+        const DWRITE_GLYPH_RUN_DESCRIPTION* glyph_run_description) {
+        if (!state_->dwrite_factory4 || !state_->device_context4 || !glyph_run) {
+            return false;
+        }
+
+        constexpr DWRITE_GLYPH_IMAGE_FORMATS kBitmapFormats =
+            DWRITE_GLYPH_IMAGE_FORMATS_PNG |
+            DWRITE_GLYPH_IMAGE_FORMATS_JPEG |
+            DWRITE_GLYPH_IMAGE_FORMATS_TIFF |
+            DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8;
+        constexpr DWRITE_GLYPH_IMAGE_FORMATS kDesiredFormats =
+            DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE |
+            DWRITE_GLYPH_IMAGE_FORMATS_CFF |
+            DWRITE_GLYPH_IMAGE_FORMATS_COLR |
+            DWRITE_GLYPH_IMAGE_FORMATS_SVG |
+            kBitmapFormats;
+
+        DWRITE_MATRIX transform{};
+        GetCurrentTransform(nullptr, &transform);
+
+        Microsoft::WRL::ComPtr<IDWriteColorGlyphRunEnumerator1> color_layers;
+        const HRESULT hr = state_->dwrite_factory4->TranslateColorGlyphRun(
+            D2D1::Point2F(baseline_origin_x, baseline_origin_y),
+            glyph_run,
+            glyph_run_description,
+            kDesiredFormats,
+            measuring_mode,
+            &transform,
+            0,
+            color_layers.GetAddressOf());
+        if (hr == DWRITE_E_NOCOLOR || !color_layers) {
+            return false;
+        }
+        if (FAILED(hr)) {
+            return false;
+        }
+
+        BOOL has_run = FALSE;
+        while (SUCCEEDED(color_layers->MoveNext(&has_run)) && has_run) {
+            const DWRITE_COLOR_GLYPH_RUN1* color_run = nullptr;
+            if (FAILED(color_layers->GetCurrentRun(&color_run)) || !color_run) {
+                continue;
+            }
+
+            if ((color_run->glyphImageFormat & kBitmapFormats) != 0 &&
+                DrawBitmapColorGlyphRun(color_run, measuring_mode)) {
+                continue;
+            }
+
+            if (color_run->glyphImageFormat == DWRITE_GLYPH_IMAGE_FORMATS_SVG) {
+                state_->device_context4->DrawSvgGlyphRun(
+                    D2D1::Point2F(color_run->baselineOriginX, color_run->baselineOriginY),
+                    &color_run->glyphRun,
+                    state_->foreground_brush.Get(),
+                    nullptr,
+                    0,
+                    measuring_mode);
+                continue;
+            }
+
+            Microsoft::WRL::ComPtr<ID2D1Brush> brush = BrushForColorRun(color_run);
+            state_->device_context->DrawGlyphRun(
+                D2D1::Point2F(color_run->baselineOriginX, color_run->baselineOriginY),
+                &color_run->glyphRun,
+                brush.Get(),
+                measuring_mode);
+        }
+        return true;
+    }
+
+    bool DrawBitmapColorGlyphRun(const DWRITE_COLOR_GLYPH_RUN1* color_run, DWRITE_MEASURING_MODE measuring_mode) {
+        const DWRITE_GLYPH_RUN& glyph_run = color_run->glyphRun;
+        if (!glyph_run.fontFace || glyph_run.glyphCount == 0 || !glyph_run.glyphIndices) {
+            return false;
+        }
+
+        std::vector<D2D1_POINT_2F> origins(glyph_run.glyphCount);
+        DWRITE_MATRIX dwrite_transform{};
+        GetCurrentTransform(nullptr, &dwrite_transform);
+        HRESULT hr = state_->dwrite_factory4->ComputeGlyphOrigins(
+            &glyph_run,
+            measuring_mode,
+            D2D1::Point2F(color_run->baselineOriginX, color_run->baselineOriginY),
+            &dwrite_transform,
+            origins.data());
+        if (FAILED(hr)) {
+            return false;
+        }
+
+        D2D1_MATRIX_3X2_F original_transform{};
+        state_->device_context->GetTransform(&original_transform);
+        FLOAT dpi_x = 96.0f;
+        FLOAT dpi_y = 96.0f;
+        state_->device_context->GetDpi(&dpi_x, &dpi_y);
+
+        bool drew_any = false;
+        for (UINT32 i = 0; i < glyph_run.glyphCount; ++i) {
+            D2D1_MATRIX_3X2_F glyph_transform{};
+            Microsoft::WRL::ComPtr<ID2D1Image> glyph_image;
+            hr = state_->device_context4->GetColorBitmapGlyphImage(
+                color_run->glyphImageFormat,
+                origins[i],
+                glyph_run.fontFace,
+                glyph_run.fontEmSize,
+                glyph_run.glyphIndices[i],
+                glyph_run.isSideways,
+                &original_transform,
+                dpi_x,
+                dpi_y,
+                &glyph_transform,
+                glyph_image.GetAddressOf());
+            if (FAILED(hr) || !glyph_image) {
+                continue;
+            }
+
+            state_->device_context->SetTransform(glyph_transform);
+            state_->device_context->DrawImage(
+                glyph_image.Get(),
+                nullptr,
+                nullptr,
+                D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            drew_any = true;
+        }
+        state_->device_context->SetTransform(original_transform);
+        return drew_any;
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1Brush> BrushForColorRun(const DWRITE_COLOR_GLYPH_RUN* color_run) {
+        if (color_run->paletteIndex == DWRITE_NO_PALETTE_INDEX) {
+            Microsoft::WRL::ComPtr<ID2D1Brush> brush;
+            state_->foreground_brush.As(&brush);
+            return brush;
+        }
+
+        D2D1_COLOR_F color{};
+        color.r = color_run->runColor.r;
+        color.g = color_run->runColor.g;
+        color.b = color_run->runColor.b;
+        color.a = color_run->runColor.a;
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(state_->device_context->CreateSolidColorBrush(color, brush.GetAddressOf()))) {
+            Microsoft::WRL::ComPtr<ID2D1Brush> fallback;
+            state_->foreground_brush.As(&fallback);
+            return fallback;
+        }
+        Microsoft::WRL::ComPtr<ID2D1Brush> result;
+        brush.As(&result);
+        return result;
+    }
+
+    ControlState* state_ = nullptr;
+};
+
 void Paint(ControlState* state) {
     if (FAILED(EnsureRenderTarget(state))) {
         PaintGdiFallback(state);
@@ -193,8 +844,8 @@ void Paint(ControlState* state) {
     PAINTSTRUCT ps{};
     BeginPaint(state->hwnd, &ps);
 
-    state->render_target->BeginDraw();
-    state->render_target->Clear(Color(state->theme.background_rgba));
+    state->device_context->BeginDraw();
+    state->device_context->Clear(Color(state->theme.background_rgba));
 
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
     if (SUCCEEDED(CreateLayout(state, layout.GetAddressOf())) && layout) {
@@ -210,7 +861,7 @@ void Paint(ControlState* state) {
                 if (SUCCEEDED(layout->HitTestTextRange(start, length, origin.x, origin.y, metrics.data(), actual, &actual))) {
                     for (UINT32 i = 0; i < actual; ++i) {
                         const auto& m = metrics[i];
-                        state->render_target->FillRectangle(
+                        state->device_context->FillRectangle(
                             D2D1::RectF(m.left, m.top, m.left + m.width, m.top + m.height),
                             state->selection_brush.Get());
                     }
@@ -218,7 +869,8 @@ void Paint(ControlState* state) {
             }
         }
 
-        state->render_target->DrawTextLayout(origin, layout.Get(), state->foreground_brush.Get());
+        TextRenderer renderer(state);
+        layout->Draw(nullptr, &renderer, origin.x, origin.y);
 
         if (GetFocus() == state->hwnd) {
             const UINT32 caret = static_cast<UINT32>(std::clamp<int64_t>(
@@ -231,7 +883,7 @@ void Paint(ControlState* state) {
             if (SUCCEEDED(layout->HitTestTextPosition(caret, FALSE, &x, &y, &metrics))) {
                 const float left = origin.x + x;
                 const float top = origin.y + y;
-                state->render_target->DrawLine(
+                state->device_context->DrawLine(
                     D2D1::Point2F(left, top),
                     D2D1::Point2F(left, top + metrics.height),
                     state->caret_brush.Get(),
@@ -240,8 +892,11 @@ void Paint(ControlState* state) {
         }
     }
 
-    HRESULT hr = state->render_target->EndDraw();
-    if (hr == D2DERR_RECREATE_TARGET) {
+    HRESULT hr = state->device_context->EndDraw();
+    if (SUCCEEDED(hr) && state->swap_chain) {
+        hr = state->swap_chain->Present(1, 0);
+    }
+    if (hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
         ResetRenderResources(state);
     }
     EndPaint(state->hwnd, &ps);
@@ -339,17 +994,117 @@ void DeleteSelectionOrRange(ControlState* state, bool backward) {
     state->ClearRedo();
     state->document.DeleteRange(static_cast<size_t>(start), static_cast<size_t>(end - start));
     state->selection = { start, start };
+    state->ResetVerticalCaretX();
     InvalidateBetterText(state);
 }
 
-void MoveCaret(ControlState* state, int64_t caret, bool extend) {
+void MoveCaret(ControlState* state, int64_t caret, bool extend, bool keep_vertical_x = false) {
     caret = std::clamp<int64_t>(caret, 0, static_cast<int64_t>(state->document.Length()));
     if (extend) {
         state->selection.caret = caret;
     } else {
         state->selection = { caret, caret };
     }
+    if (!keep_vertical_x) {
+        state->ResetVerticalCaretX();
+    }
     InvalidateBetterText(state);
+}
+
+int64_t PlainTextLineMove(ControlState* state, int direction) {
+    const std::wstring text = state->document.PlainText();
+    const int64_t length = static_cast<int64_t>(text.size());
+    const int64_t caret = std::clamp<int64_t>(state->selection.caret, 0, length);
+
+    auto line_start = [&](int64_t position) {
+        if (position <= 0) {
+            return int64_t{ 0 };
+        }
+        const size_t search_from = static_cast<size_t>(position - 1);
+        const size_t newline = text.rfind(L'\n', search_from);
+        return newline == std::wstring::npos ? int64_t{ 0 } : static_cast<int64_t>(newline + 1);
+    };
+
+    auto line_end = [&](int64_t start) {
+        const size_t newline = text.find(L'\n', static_cast<size_t>(start));
+        return newline == std::wstring::npos ? length : static_cast<int64_t>(newline);
+    };
+
+    const int64_t current_start = line_start(caret);
+    const int64_t current_end = line_end(current_start);
+    const int64_t column = caret - current_start;
+
+    if (direction < 0) {
+        if (current_start == 0) {
+            return 0;
+        }
+        const int64_t target_start = line_start(current_start - 1);
+        const int64_t target_end = line_end(target_start);
+        return std::min(target_start + column, target_end);
+    }
+
+    if (current_end >= length) {
+        return length;
+    }
+    const int64_t target_start = current_end + 1;
+    const int64_t target_end = line_end(target_start);
+    return std::min(target_start + column, target_end);
+}
+
+void MoveCaretVertically(ControlState* state, int direction, bool extend) {
+    const int64_t length = static_cast<int64_t>(state->document.Length());
+    if (length == 0) {
+        MoveCaret(state, 0, extend, true);
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(CreateLayout(state, layout.GetAddressOf())) || !layout) {
+        MoveCaret(state, PlainTextLineMove(state, direction), extend);
+        return;
+    }
+
+    const UINT32 caret = static_cast<UINT32>(std::clamp<int64_t>(state->selection.caret, 0, length));
+    FLOAT caret_x = 0.0f;
+    FLOAT caret_y = 0.0f;
+    DWRITE_HIT_TEST_METRICS caret_metrics{};
+    if (FAILED(layout->HitTestTextPosition(caret, FALSE, &caret_x, &caret_y, &caret_metrics)) ||
+        caret_metrics.height <= 0.0f) {
+        MoveCaret(state, PlainTextLineMove(state, direction), extend);
+        return;
+    }
+
+    if (!state->vertical_caret_x_valid) {
+        state->vertical_caret_x = caret_x;
+        state->vertical_caret_x_valid = true;
+    }
+
+    const float target_y = direction < 0
+        ? caret_metrics.top - 0.5f
+        : caret_metrics.top + caret_metrics.height + 0.5f;
+
+    DWRITE_TEXT_METRICS layout_metrics{};
+    if (SUCCEEDED(layout->GetMetrics(&layout_metrics))) {
+        if (target_y < 0.0f) {
+            MoveCaret(state, 0, extend, true);
+            return;
+        }
+        if (target_y >= layout_metrics.height) {
+            MoveCaret(state, length, extend, true);
+            return;
+        }
+    }
+
+    BOOL trailing = FALSE;
+    BOOL inside = FALSE;
+    DWRITE_HIT_TEST_METRICS target_metrics{};
+    if (FAILED(layout->HitTestPoint(state->vertical_caret_x, target_y, &trailing, &inside, &target_metrics))) {
+        MoveCaret(state, PlainTextLineMove(state, direction), extend);
+        return;
+    }
+
+    const int64_t target = static_cast<int64_t>(target_metrics.textPosition) + (trailing ? 1 : 0);
+    MoveCaret(state, target, extend, true);
 }
 
 bool CtrlDown() {
@@ -367,6 +1122,7 @@ LRESULT HandleKeyDown(ControlState* state, WPARAM key) {
         switch (key) {
         case L'A':
             state->selection = { 0, static_cast<int64_t>(state->document.Length()) };
+            state->ResetVerticalCaretX();
             InvalidateBetterText(state);
             return 0;
         case L'C':
@@ -396,6 +1152,12 @@ LRESULT HandleKeyDown(ControlState* state, WPARAM key) {
         return 0;
     case VK_RIGHT:
         MoveCaret(state, state->selection.caret + 1, shift);
+        return 0;
+    case VK_UP:
+        MoveCaretVertically(state, -1, shift);
+        return 0;
+    case VK_DOWN:
+        MoveCaretVertically(state, 1, shift);
         return 0;
     case VK_HOME:
         MoveCaret(state, 0, shift);
@@ -460,6 +1222,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     case WM_NCCREATE: {
         auto* created = new ControlState();
         created->hwnd = hwnd;
+        created->default_style = SystemDefaultTextStyle(hwnd);
         created->document.SetDefaultStyle(created->default_style);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created));
         return TRUE;
@@ -473,12 +1236,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         InvalidateBetterText(state);
         return 0;
     case WM_SIZE:
-        if (state && state->render_target) {
+        if (state && state->swap_chain) {
             const UINT width = LOWORD(lparam);
             const UINT height = HIWORD(lparam);
-            state->render_target->Resize(D2D1::SizeU(width, height));
+            ResizeRenderTarget(state, width, height);
         }
         if (state) {
+            state->ResetVerticalCaretX();
             UpdateScrollInfo(state);
         }
         return 0;
@@ -503,6 +1267,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             state->dragging = true;
             const int64_t pos = HitTest(state, static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
             state->selection = { pos, pos };
+            state->ResetVerticalCaretX();
             InvalidateBetterText(state);
         }
         return 0;
@@ -510,6 +1275,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         if (state && state->dragging && (wparam & MK_LBUTTON)) {
             const int64_t pos = HitTest(state, static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
             state->selection.caret = pos;
+            state->ResetVerticalCaretX();
             InvalidateBetterText(state);
         }
         return 0;
@@ -591,10 +1357,19 @@ void ResetRenderResources(ControlState* state) {
     if (!state) {
         return;
     }
+    if (state->device_context) {
+        state->device_context->SetTarget(nullptr);
+    }
+    state->target_bitmap.Reset();
     state->caret_brush.Reset();
     state->selection_brush.Reset();
     state->foreground_brush.Reset();
-    state->render_target.Reset();
+    state->device_context4.Reset();
+    state->device_context.Reset();
+    state->d2d_device.Reset();
+    state->swap_chain.Reset();
+    state->dxgi_device.Reset();
+    state->d3d_device.Reset();
 }
 
 } // namespace bettertext

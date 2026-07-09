@@ -37,7 +37,9 @@ target_include_directories(bettertext
 target_link_libraries(bettertext
     PUBLIC
         d2d1
+        d3d11
         dwrite
+        dxgi
         windowscodecs
         ole32
         imm32
@@ -48,6 +50,21 @@ if(BETTERTEXT_BUILD_DEMO)
     add_executable(bettertext_demo WIN32 demo/main.cpp)
     target_compile_features(bettertext_demo PRIVATE cxx_std_20)
     target_link_libraries(bettertext_demo PRIVATE bettertext)
+
+    set(BETTERTEXT_NOTO_EMOJI_FONT
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/NotoColorEmoji_WindowsCompatible.ttf")
+    set(BETTERTEXT_NOTO_EMOJI_LICENSE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/NotoEmoji-LICENSE")
+    if(EXISTS "${BETTERTEXT_NOTO_EMOJI_FONT}")
+        add_custom_command(TARGET bettertext_demo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:bettertext_demo>/fonts"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${BETTERTEXT_NOTO_EMOJI_FONT}"
+                "$<TARGET_FILE_DIR:bettertext_demo>/fonts/NotoColorEmoji_WindowsCompatible.ttf"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${BETTERTEXT_NOTO_EMOJI_LICENSE}"
+                "$<TARGET_FILE_DIR:bettertext_demo>/fonts/NotoEmoji-LICENSE")
+    endif()
 endif()
 
 if(BETTERTEXT_BUILD_TESTS)

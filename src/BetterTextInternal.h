@@ -3,8 +3,10 @@
 #include "BetterText/BetterText.h"
 #include "BetterTextDocument.h"
 
-#include <d2d1.h>
-#include <dwrite.h>
+#include <d2d1_3.h>
+#include <d3d11_1.h>
+#include <dwrite_3.h>
+#include <dxgi1_2.h>
 #include <map>
 #include <string>
 #include <vector>
@@ -19,6 +21,8 @@ struct ControlState {
     bool read_only = false;
     bool dragging = false;
     float scroll_y = 0.0f;
+    bool vertical_caret_x_valid = false;
+    float vertical_caret_x = 0.0f;
     uint64_t next_image_request = 1;
 
     BetterTextTheme theme{
@@ -38,17 +42,26 @@ struct ControlState {
     std::vector<Document> undo_stack;
     std::vector<Document> redo_stack;
 
-    Microsoft::WRL::ComPtr<ID2D1Factory> d2d_factory;
+    Microsoft::WRL::ComPtr<ID2D1Factory1> d2d_factory;
+    Microsoft::WRL::ComPtr<ID3D11Device> d3d_device;
+    Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain;
+    Microsoft::WRL::ComPtr<ID2D1Device> d2d_device;
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> device_context;
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext4> device_context4;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> target_bitmap;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwrite_factory;
-    Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> render_target;
+    Microsoft::WRL::ComPtr<IDWriteFactory4> dwrite_factory4;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> foreground_brush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selection_brush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caret_brush;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> text_format;
+    Microsoft::WRL::ComPtr<IDWriteFontCollection> emoji_font_collection;
 
     void PushUndo();
     void ClearRedo();
     void ClampSelection();
+    void ResetVerticalCaretX();
 };
 
 ControlState* GetState(HWND hwnd);

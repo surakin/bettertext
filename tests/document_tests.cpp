@@ -90,6 +90,59 @@ void HiddenControlSmokeTest() {
     DestroyWindow(hwnd);
 }
 
+void SendKeyWithShift(HWND hwnd, WPARAM key) {
+    BYTE keyboard_state[256] = {};
+    if (!GetKeyboardState(keyboard_state)) {
+        SendMessageW(hwnd, WM_KEYDOWN, key, 0);
+        return;
+    }
+
+    const BYTE previous_shift = keyboard_state[VK_SHIFT];
+    keyboard_state[VK_SHIFT] |= 0x80;
+    SetKeyboardState(keyboard_state);
+    SendMessageW(hwnd, WM_KEYDOWN, key, 0);
+    keyboard_state[VK_SHIFT] = previous_shift;
+    SetKeyboardState(keyboard_state);
+}
+
+void ShiftUpDownExtendsSelection() {
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    Expect(BetterTextRegisterControl(instance), "register control for vertical selection");
+    HWND hwnd = CreateWindowExW(
+        0,
+        BETTERTEXT_CLASS_NAME,
+        L"",
+        WS_OVERLAPPED,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        320,
+        200,
+        nullptr,
+        nullptr,
+        instance,
+        nullptr);
+    Expect(hwnd != nullptr, "create hidden control for vertical selection");
+    if (!hwnd) {
+        return;
+    }
+
+    BetterTextSetText(hwnd, L"iiii\niiii");
+    BetterTextSetSelection(hwnd, 2, 2);
+    SendKeyWithShift(hwnd, VK_DOWN);
+
+    BetterTextSelection selection{};
+    BetterTextGetSelection(hwnd, &selection);
+    Expect(selection.anchor == 2, "shift+down keeps selection anchor");
+    Expect(selection.caret == 7, "shift+down extends caret to line below");
+
+    SendKeyWithShift(hwnd, VK_UP);
+    BetterTextGetSelection(hwnd, &selection);
+    Expect(selection.anchor == 2, "shift+up keeps selection anchor");
+    Expect(selection.caret == 2, "shift+up returns caret to line above");
+
+    DestroyWindow(hwnd);
+}
+
 } // namespace
 
 int main() {
@@ -98,6 +151,7 @@ int main() {
     HtmlRoundTrip();
     EditPreservesImageRuns();
     HiddenControlSmokeTest();
+    ShiftUpDownExtendsSelection();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " BetterText test(s) failed.\n";
