@@ -104,6 +104,7 @@ BOOL BetterTextSetText(HWND control, const wchar_t* text) {
     state->selection = { 0, 0 };
     state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
+    bettertext::NotifyChanged(state);
     return TRUE;
 }
 
@@ -138,6 +139,7 @@ BOOL BetterTextSetDocumentJson(HWND control, const wchar_t* json) {
     state->selection = { 0, 0 };
     state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
+    bettertext::NotifyChanged(state);
     return TRUE;
 }
 
@@ -172,6 +174,7 @@ BOOL BetterTextSetHtml(HWND control, const wchar_t* html) {
     state->selection = { 0, 0 };
     state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
+    bettertext::NotifyChanged(state);
     return TRUE;
 }
 
@@ -205,6 +208,7 @@ BOOL BetterTextInsertText(HWND control, const wchar_t* text) {
     state->ClampSelection();
     state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
+    bettertext::NotifyChanged(state);
     return TRUE;
 }
 
@@ -226,6 +230,7 @@ BOOL BetterTextInsertImageUri(HWND control, const wchar_t* uri, const wchar_t* a
         state->image_provider->ResolveImageUri(control, request_id, uri, display_width, display_height);
     }
     bettertext::InvalidateBetterText(state);
+    bettertext::NotifyChanged(state);
     return TRUE;
 }
 
@@ -261,6 +266,7 @@ BOOL BetterTextUndo(HWND control) {
     state->ClampSelection();
     state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
+    bettertext::NotifyChanged(state);
     return TRUE;
 }
 
@@ -275,6 +281,7 @@ BOOL BetterTextRedo(HWND control) {
     state->ClampSelection();
     state->ResetVerticalCaretX();
     bettertext::InvalidateBetterText(state);
+    bettertext::NotifyChanged(state);
     return TRUE;
 }
 
@@ -380,6 +387,66 @@ BOOL BetterTextSetFontProvider(HWND control, IBetterTextFontProvider* provider) 
     state->text_format.Reset();
     state->emoji_font_collection.Reset();
     state->ResetVerticalCaretX();
+    bettertext::InvalidateBetterText(state);
+    return TRUE;
+}
+
+BOOL BetterTextSetNotifyCallback(HWND control, BetterTextNotifyProc callback, void* user_data) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state) {
+        return FALSE;
+    }
+    state->notify_callback = callback;
+    state->notify_user_data = user_data;
+    return TRUE;
+}
+
+float BetterTextGetContentHeight(HWND control) {
+    ControlState* state = bettertext::GetState(control);
+    return bettertext::ComputeContentHeight(state);
+}
+
+BOOL BetterTextSetSingleLine(HWND control, BOOL single_line) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state) {
+        return FALSE;
+    }
+    state->single_line = single_line != FALSE;
+    // Word-wrap mode is baked into the cached IDWriteTextFormat at creation
+    // time (see EnsureTextFormat) — drop it so the next layout rebuilds with
+    // the right DWRITE_WORD_WRAPPING_* value.
+    state->text_format.Reset();
+    state->scroll_x = 0.0f;
+    state->ResetVerticalCaretX();
+    bettertext::InvalidateBetterText(state);
+    return TRUE;
+}
+
+BOOL BetterTextSetSubmitOnEnter(HWND control, BOOL enabled) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state) {
+        return FALSE;
+    }
+    state->submit_on_enter = enabled != FALSE;
+    return TRUE;
+}
+
+BOOL BetterTextSetPlaceholder(HWND control, const wchar_t* text) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state) {
+        return FALSE;
+    }
+    state->placeholder = text ? text : L"";
+    bettertext::InvalidateBetterText(state);
+    return TRUE;
+}
+
+BOOL BetterTextSetPasswordMode(HWND control, BOOL enabled) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state) {
+        return FALSE;
+    }
+    state->password_mode = enabled != FALSE;
     bettertext::InvalidateBetterText(state);
     return TRUE;
 }

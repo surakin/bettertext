@@ -44,6 +44,16 @@ typedef struct BetterTextTextStyle {
     BOOL underline;
 } BetterTextTextStyle;
 
+// Events delivered through BetterTextNotifyProc. There is no WM_NOTIFY /
+// WM_COMMAND of any kind from this control otherwise — callers that need to
+// react to text changes or Enter must register a callback.
+typedef enum BetterTextEventKind {
+    BetterTextEvent_Changed = 0,
+    BetterTextEvent_Submit = 1,
+} BetterTextEventKind;
+
+typedef void (*BetterTextNotifyProc)(HWND control, int event, void* user_data);
+
 BETTERTEXT_API BOOL BetterTextRegisterControl(HINSTANCE instance);
 
 BETTERTEXT_API BOOL BetterTextSetText(HWND control, const wchar_t* text);
@@ -81,6 +91,36 @@ BETTERTEXT_API BOOL BetterTextSetTheme(HWND control, const BetterTextTheme* them
 BETTERTEXT_API BOOL BetterTextGetTheme(HWND control, BetterTextTheme* theme);
 BETTERTEXT_API BOOL BetterTextSetDefaultTextStyle(HWND control, const BetterTextTextStyle* style);
 BETTERTEXT_API BOOL BetterTextGetDefaultTextStyle(HWND control, BetterTextTextStyle* style);
+
+// Fires BetterTextEvent_Changed on every document mutation and
+// BetterTextEvent_Submit when Enter is pressed and swallowed (see
+// BetterTextSetSingleLine / BetterTextSetSubmitOnEnter). Pass a null callback
+// to stop receiving notifications.
+BETTERTEXT_API BOOL BetterTextSetNotifyCallback(
+    HWND control, BetterTextNotifyProc callback, void* user_data);
+
+// Height (in DIPs) the current document needs to lay out at the control's
+// current client width, including top/bottom padding — for auto-grow hosts.
+BETTERTEXT_API float BetterTextGetContentHeight(HWND control);
+
+// No word-wrap; Enter always fires BetterTextEvent_Submit instead of
+// inserting a newline; the control auto-scrolls horizontally to keep the
+// caret visible instead of wrapping. For single-line inputs (search boxes,
+// form fields).
+BETTERTEXT_API BOOL BetterTextSetSingleLine(HWND control, BOOL single_line);
+
+// Multi-line inputs only: Enter (without Shift) fires BetterTextEvent_Submit
+// instead of inserting a newline; Shift+Enter still inserts one. No effect
+// when single-line mode is already on (Enter never inserts there).
+BETTERTEXT_API BOOL BetterTextSetSubmitOnEnter(HWND control, BOOL enabled);
+
+// Cue text drawn (in the theme's placeholder_rgba) whenever the document is
+// empty. Pass an empty/null string to clear.
+BETTERTEXT_API BOOL BetterTextSetPlaceholder(HWND control, const wchar_t* text);
+
+// Renders every character as a bullet without altering the underlying
+// document, so undo/redo/copy of the real text still work normally.
+BETTERTEXT_API BOOL BetterTextSetPasswordMode(HWND control, BOOL enabled);
 
 #ifdef __cplusplus
 }

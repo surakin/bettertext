@@ -258,6 +258,9 @@ HRESULT EnsureRenderTarget(ControlState* state) {
     if (!state->caret_brush) {
         state->device_context->CreateSolidColorBrush(Color(state->theme.caret_rgba), state->caret_brush.GetAddressOf());
     }
+    if (!state->placeholder_brush) {
+        state->device_context->CreateSolidColorBrush(Color(state->theme.placeholder_rgba), state->placeholder_brush.GetAddressOf());
+    }
     return S_OK;
 }
 
@@ -280,7 +283,8 @@ HRESULT EnsureTextFormat(ControlState* state) {
         L"",
         state->text_format.GetAddressOf());
     if (SUCCEEDED(hr)) {
-        state->text_format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        state->text_format->SetWordWrapping(
+            state->single_line ? DWRITE_WORD_WRAPPING_NO_WRAP : DWRITE_WORD_WRAPPING_WRAP);
         state->text_format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     }
     return hr;
@@ -464,6 +468,38 @@ void ApplyEmojiFallback(ControlState* state, IDWriteTextLayout* layout, const st
     }
 }
 
+// Text actually laid out on screen: the real document text with password
+// masking applied and the live IME composition string (if any) spliced in at
+// the caret. `document`/PlainText() itself is never touched by either —
+// masking is display-only and the composition only lands in the document
+// once GCS_RESULTSTR commits it (see HandleImeComposition).
+std::wstring ComposedDisplayText(const ControlState* state, size_t* out_composition_start = nullptr,
+                                  size_t* out_composition_len = nullptr) {
+    if (out_composition_start) *out_composition_start = 0;
+    if (out_composition_len) *out_composition_len = 0;
+
+    std::wstring text = state->document.PlainText();
+    if (state->password_mode) {
+        for (wchar_t& ch : text) {
+            if (ch != L'\n') ch = L'•';
+        }
+    }
+
+    if (state->ime_composing && !state->ime_composition.empty()) {
+        const size_t caret = static_cast<size_t>(
+            std::clamp<int64_t>(state->selection.caret, 0, static_cast<int64_t>(text.size())));
+        std::wstring piece = state->ime_composition;
+        if (state->password_mode) {
+            for (wchar_t& ch : piece) ch = L'•';
+        }
+        text.insert(caret, piece);
+        if (out_composition_start) *out_composition_start = caret;
+        if (out_composition_len) *out_composition_len = piece.size();
+    }
+
+    return text;
+}
+
 HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
     *layout = nullptr;
     HRESULT hr = EnsureTextFormat(state);
@@ -473,7 +509,9 @@ HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
 
     RECT rect = ClientRect(state->hwnd);
     const float width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - (kPadding * 2.0f));
-    const std::wstring text = state->document.PlainText();
+    size_t composition_start = 0;
+    size_t composition_len = 0;
+    const std::wstring text = ComposedDisplayText(state, &composition_start, &composition_len);
     hr = state->dwrite_factory->CreateTextLayout(
         text.c_str(),
         static_cast<UINT32>(text.size()),
@@ -483,6 +521,10 @@ HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
         layout);
     if (SUCCEEDED(hr) && state->default_style.underline && !text.empty()) {
         (*layout)->SetUnderline(TRUE, DWRITE_TEXT_RANGE{ 0, static_cast<UINT32>(text.size()) });
+    }
+    if (SUCCEEDED(hr) && composition_len > 0) {
+        (*layout)->SetUnderline(
+            TRUE, DWRITE_TEXT_RANGE{ static_cast<UINT32>(composition_start), static_cast<UINT32>(composition_len) });
     }
     if (SUCCEEDED(hr)) {
         ApplyEmojiFallback(state, *layout, text);
@@ -847,9 +889,22 @@ void Paint(ControlState* state) {
     state->device_context->BeginDraw();
     state->device_context->Clear(Color(state->theme.background_rgba));
 
+    if (state->document.Empty() && !state->ime_composing && !state->placeholder.empty() &&
+        SUCCEEDED(EnsureTextFormat(state))) {
+        RECT rect = ClientRect(state->hwnd);
+        const float width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - (kPadding * 2.0f));
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> placeholder_layout;
+        if (SUCCEEDED(state->dwrite_factory->CreateTextLayout(
+                state->placeholder.c_str(), static_cast<UINT32>(state->placeholder.size()),
+                state->text_format.Get(), width, 100000.0f, placeholder_layout.GetAddressOf()))) {
+            state->device_context->DrawTextLayout(
+                D2D1::Point2F(kPadding, kPadding), placeholder_layout.Get(), state->placeholder_brush.Get());
+        }
+    }
+
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
     if (SUCCEEDED(CreateLayout(state, layout.GetAddressOf())) && layout) {
-        const D2D1_POINT_2F origin = D2D1::Point2F(kPadding, kPadding - state->scroll_y);
+        const D2D1_POINT_2F origin = D2D1::Point2F(kPadding - state->scroll_x, kPadding - state->scroll_y);
 
         if (HasSelection(*state)) {
             const UINT32 start = static_cast<UINT32>(SelectionStart(*state));
@@ -873,10 +928,21 @@ void Paint(ControlState* state) {
         layout->Draw(nullptr, &renderer, origin.x, origin.y);
 
         if (GetFocus() == state->hwnd) {
-            const UINT32 caret = static_cast<UINT32>(std::clamp<int64_t>(
-                state->selection.caret,
-                0,
-                static_cast<int64_t>(state->document.Length())));
+            UINT32 caret = 0;
+            if (state->ime_composing) {
+                size_t composition_start = 0;
+                size_t composition_len = 0;
+                ComposedDisplayText(state, &composition_start, &composition_len);
+                caret = static_cast<UINT32>(
+                    composition_start +
+                    static_cast<size_t>(std::clamp<int32_t>(state->ime_composition_cursor, 0,
+                                                             static_cast<int32_t>(composition_len))));
+            } else {
+                caret = static_cast<UINT32>(std::clamp<int64_t>(
+                    state->selection.caret,
+                    0,
+                    static_cast<int64_t>(state->document.Length())));
+            }
             FLOAT x = 0.0f;
             FLOAT y = 0.0f;
             DWRITE_HIT_TEST_METRICS metrics{};
@@ -911,7 +977,7 @@ int64_t HitTest(ControlState* state, float x, float y) {
     BOOL inside = FALSE;
     DWRITE_HIT_TEST_METRICS metrics{};
     const HRESULT hr = layout->HitTestPoint(
-        x - kPadding,
+        x - kPadding + state->scroll_x,
         y - kPadding + state->scroll_y,
         &trailing,
         &inside,
@@ -921,6 +987,35 @@ int64_t HitTest(ControlState* state, float x, float y) {
     }
     int64_t position = static_cast<int64_t>(metrics.textPosition) + (trailing ? 1 : 0);
     return std::clamp<int64_t>(position, 0, static_cast<int64_t>(state->document.Length()));
+}
+
+// Single-line fields don't wrap — instead they scroll horizontally, mirroring
+// EDIT's ES_AUTOHSCROLL. Called after every caret-affecting edit/navigation
+// while single_line is set.
+void EnsureCaretVisibleHorizontally(ControlState* state) {
+    if (!state->single_line) {
+        return;
+    }
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(CreateLayout(state, layout.GetAddressOf())) || !layout) {
+        return;
+    }
+    RECT rect = ClientRect(state->hwnd);
+    const float visible_width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - kPadding * 2.0f);
+    const UINT32 caret = static_cast<UINT32>(
+        std::clamp<int64_t>(state->selection.caret, 0, static_cast<int64_t>(state->document.Length())));
+    FLOAT x = 0.0f;
+    FLOAT y = 0.0f;
+    DWRITE_HIT_TEST_METRICS metrics{};
+    if (FAILED(layout->HitTestTextPosition(caret, FALSE, &x, &y, &metrics))) {
+        return;
+    }
+    if (x - state->scroll_x < 0.0f) {
+        state->scroll_x = x;
+    } else if (x - state->scroll_x > visible_width) {
+        state->scroll_x = x - visible_width;
+    }
+    state->scroll_x = std::max(0.0f, state->scroll_x);
 }
 
 std::wstring SelectedText(ControlState* state) {
@@ -995,6 +1090,8 @@ void DeleteSelectionOrRange(ControlState* state, bool backward) {
     state->document.DeleteRange(static_cast<size_t>(start), static_cast<size_t>(end - start));
     state->selection = { start, start };
     state->ResetVerticalCaretX();
+    EnsureCaretVisibleHorizontally(state);
+    NotifyChanged(state);
     InvalidateBetterText(state);
 }
 
@@ -1008,6 +1105,7 @@ void MoveCaret(ControlState* state, int64_t caret, bool extend, bool keep_vertic
     if (!keep_vertical_x) {
         state->ResetVerticalCaretX();
     }
+    EnsureCaretVisibleHorizontally(state);
     InvalidateBetterText(state);
 }
 
@@ -1184,6 +1282,11 @@ LRESULT HandleChar(ControlState* state, WPARAM ch) {
         return 0;
     }
 
+    if (ch == L'\r' && (state->single_line || (state->submit_on_enter && !ShiftDown()))) {
+        NotifySubmit(state);
+        return 0;
+    }
+
     wchar_t buffer[3] = {};
     if (ch == L'\r') {
         buffer[0] = L'\n';
@@ -1194,24 +1297,81 @@ LRESULT HandleChar(ControlState* state, WPARAM ch) {
     }
     BetterTextInsertText(state->hwnd, buffer);
     UpdateScrollInfo(state);
+    EnsureCaretVisibleHorizontally(state);
     return 0;
 }
 
-LRESULT HandleImeComposition(ControlState* state, LPARAM lparam) {
-    if (state->read_only || !(lparam & GCS_RESULTSTR)) {
-        return 0;
+// Positions the (legacy, non-TSF) IME composition/candidate window at the
+// caret so it doesn't default to the top-left of the window. Modern TSF IMEs
+// mostly ignore this in favor of drawing their candidate UI near the caret
+// they infer from our inline rendering, but this is still the documented
+// mechanism and is respected by IMEs that fall back to the classic API.
+void UpdateImeCompositionWindowPos(ControlState* state) {
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(CreateLayout(state, layout.GetAddressOf())) || !layout) {
+        return;
     }
+    size_t composition_start = 0;
+    size_t composition_len = 0;
+    ComposedDisplayText(state, &composition_start, &composition_len);
+    const UINT32 caret = static_cast<UINT32>(
+        composition_start +
+        static_cast<size_t>(std::clamp<int32_t>(state->ime_composition_cursor, 0,
+                                                 static_cast<int32_t>(composition_len))));
+    FLOAT x = 0.0f;
+    FLOAT y = 0.0f;
+    DWRITE_HIT_TEST_METRICS metrics{};
+    if (FAILED(layout->HitTestTextPosition(caret, FALSE, &x, &y, &metrics))) {
+        return;
+    }
+
+    HIMC context = ImmGetContext(state->hwnd);
+    if (!context) {
+        return;
+    }
+    COMPOSITIONFORM form{};
+    form.dwStyle = CFS_POINT;
+    form.ptCurrentPos.x = static_cast<LONG>(kPadding - state->scroll_x + x);
+    form.ptCurrentPos.y = static_cast<LONG>(kPadding - state->scroll_y + y);
+    ImmSetCompositionWindow(context, &form);
+    ImmReleaseContext(state->hwnd, context);
+}
+
+LRESULT HandleImeComposition(ControlState* state, LPARAM lparam) {
     HIMC context = ImmGetContext(state->hwnd);
     if (!context) {
         return 0;
     }
-    const LONG bytes = ImmGetCompositionStringW(context, GCS_RESULTSTR, nullptr, 0);
-    if (bytes > 0) {
-        std::wstring text(static_cast<size_t>(bytes) / sizeof(wchar_t), L'\0');
-        ImmGetCompositionStringW(context, GCS_RESULTSTR, text.data(), bytes);
-        BetterTextInsertText(state->hwnd, text.c_str());
+
+    if (lparam & GCS_COMPSTR) {
+        const LONG bytes = ImmGetCompositionStringW(context, GCS_COMPSTR, nullptr, 0);
+        std::wstring composition(static_cast<size_t>(std::max<LONG>(0, bytes)) / sizeof(wchar_t), L'\0');
+        if (bytes > 0) {
+            ImmGetCompositionStringW(context, GCS_COMPSTR, composition.data(), bytes);
+        }
+        state->ime_composing = true;
+        state->ime_composition = std::move(composition);
+        // Per ImmGetCompositionString docs, GCS_CURSORPOS returns the cursor
+        // index directly (in WCHARs) rather than writing through a buffer.
+        state->ime_composition_cursor = ImmGetCompositionStringW(context, GCS_CURSORPOS, nullptr, 0);
+        InvalidateBetterText(state);
     }
+
+    if (!state->read_only && (lparam & GCS_RESULTSTR)) {
+        const LONG bytes = ImmGetCompositionStringW(context, GCS_RESULTSTR, nullptr, 0);
+        if (bytes > 0) {
+            std::wstring text(static_cast<size_t>(bytes) / sizeof(wchar_t), L'\0');
+            ImmGetCompositionStringW(context, GCS_RESULTSTR, text.data(), bytes);
+            BetterTextInsertText(state->hwnd, text.c_str());
+        }
+        state->ime_composition.clear();
+        state->ime_composition_cursor = 0;
+    }
+
     ImmReleaseContext(state->hwnd, context);
+    if (lparam & GCS_COMPSTR) {
+        UpdateImeCompositionWindowPos(state);
+    }
     return 0;
 }
 
@@ -1258,6 +1418,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         return state ? HandleKeyDown(state, wparam) : 0;
     case WM_CHAR:
         return state ? HandleChar(state, wparam) : 0;
+    case WM_IME_STARTCOMPOSITION:
+        if (state) {
+            state->ime_composing = true;
+            state->ime_composition.clear();
+            state->ime_composition_cursor = 0;
+            UpdateImeCompositionWindowPos(state);
+            InvalidateBetterText(state);
+        }
+        // Handled entirely ourselves (composition string is rendered inline
+        // via D2D in Paint()) — do not let Windows draw its own default
+        // composition overlay on top.
+        return 0;
+    case WM_IME_ENDCOMPOSITION:
+        if (state) {
+            state->ime_composing = false;
+            state->ime_composition.clear();
+            state->ime_composition_cursor = 0;
+            InvalidateBetterText(state);
+        }
+        return 0;
     case WM_IME_COMPOSITION:
         return state ? HandleImeComposition(state, lparam) : 0;
     case WM_LBUTTONDOWN:
@@ -1268,6 +1448,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             const int64_t pos = HitTest(state, static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
             state->selection = { pos, pos };
             state->ResetVerticalCaretX();
+            EnsureCaretVisibleHorizontally(state);
             InvalidateBetterText(state);
         }
         return 0;
@@ -1276,6 +1457,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             const int64_t pos = HitTest(state, static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
             state->selection.caret = pos;
             state->ResetVerticalCaretX();
+            EnsureCaretVisibleHorizontally(state);
             InvalidateBetterText(state);
         }
         return 0;
@@ -1364,12 +1546,29 @@ void ResetRenderResources(ControlState* state) {
     state->caret_brush.Reset();
     state->selection_brush.Reset();
     state->foreground_brush.Reset();
+    state->placeholder_brush.Reset();
     state->device_context4.Reset();
     state->device_context.Reset();
     state->d2d_device.Reset();
     state->swap_chain.Reset();
     state->dxgi_device.Reset();
     state->d3d_device.Reset();
+}
+
+void NotifyChanged(ControlState* state) {
+    if (state && state->notify_callback) {
+        state->notify_callback(state->hwnd, BetterTextEvent_Changed, state->notify_user_data);
+    }
+}
+
+void NotifySubmit(ControlState* state) {
+    if (state && state->notify_callback) {
+        state->notify_callback(state->hwnd, BetterTextEvent_Submit, state->notify_user_data);
+    }
+}
+
+float ComputeContentHeight(ControlState* state) {
+    return state ? LayoutHeight(state) : 0.0f;
 }
 
 } // namespace bettertext

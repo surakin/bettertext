@@ -90,19 +90,23 @@ void HiddenControlSmokeTest() {
     DestroyWindow(hwnd);
 }
 
-void SendKeyWithShift(HWND hwnd, WPARAM key) {
+void SendMessageWithShift(HWND hwnd, UINT message, WPARAM wparam) {
     BYTE keyboard_state[256] = {};
     if (!GetKeyboardState(keyboard_state)) {
-        SendMessageW(hwnd, WM_KEYDOWN, key, 0);
+        SendMessageW(hwnd, message, wparam, 0);
         return;
     }
 
     const BYTE previous_shift = keyboard_state[VK_SHIFT];
     keyboard_state[VK_SHIFT] |= 0x80;
     SetKeyboardState(keyboard_state);
-    SendMessageW(hwnd, WM_KEYDOWN, key, 0);
+    SendMessageW(hwnd, message, wparam, 0);
     keyboard_state[VK_SHIFT] = previous_shift;
     SetKeyboardState(keyboard_state);
+}
+
+void SendKeyWithShift(HWND hwnd, WPARAM key) {
+    SendMessageWithShift(hwnd, WM_KEYDOWN, key);
 }
 
 void ShiftUpDownExtendsSelection() {
@@ -143,6 +147,151 @@ void ShiftUpDownExtendsSelection() {
     DestroyWindow(hwnd);
 }
 
+HWND CreateHiddenControl(HINSTANCE instance) {
+    if (!BetterTextRegisterControl(instance)) {
+        return nullptr;
+    }
+    return CreateWindowExW(
+        0,
+        BETTERTEXT_CLASS_NAME,
+        L"",
+        WS_OVERLAPPED,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        320,
+        200,
+        nullptr,
+        nullptr,
+        instance,
+        nullptr);
+}
+
+struct NotifyRecord {
+    int changed_count = 0;
+    int submit_count = 0;
+};
+
+void RecordNotify(HWND, int event, void* user_data) {
+    auto* record = static_cast<NotifyRecord*>(user_data);
+    if (event == BetterTextEvent_Changed) {
+        ++record->changed_count;
+    } else if (event == BetterTextEvent_Submit) {
+        ++record->submit_count;
+    }
+}
+
+void SingleLineSuppressesEnterAndFiresSubmit() {
+    HWND hwnd = CreateHiddenControl(GetModuleHandleW(nullptr));
+    Expect(hwnd != nullptr, "create hidden control for single-line test");
+    if (!hwnd) {
+        return;
+    }
+
+    BetterTextSetSingleLine(hwnd, TRUE);
+    NotifyRecord record;
+    BetterTextSetNotifyCallback(hwnd, &RecordNotify, &record);
+
+    BetterTextSetText(hwnd, L"hello");
+    SendMessageW(hwnd, WM_CHAR, L'\r', 0);
+
+    wchar_t buffer[32] = {};
+    BetterTextGetText(hwnd, buffer, 32);
+    Expect(std::wstring(buffer) == L"hello", "single-line mode never inserts a newline");
+    Expect(record.submit_count == 1, "single-line Enter fires exactly one submit event");
+
+    DestroyWindow(hwnd);
+}
+
+void SubmitOnEnterAllowsShiftNewline() {
+    HWND hwnd = CreateHiddenControl(GetModuleHandleW(nullptr));
+    Expect(hwnd != nullptr, "create hidden control for submit-on-enter test");
+    if (!hwnd) {
+        return;
+    }
+
+    BetterTextSetSubmitOnEnter(hwnd, TRUE);
+    NotifyRecord record;
+    BetterTextSetNotifyCallback(hwnd, &RecordNotify, &record);
+
+    BetterTextSetText(hwnd, L"line one");
+    BetterTextSetSelection(hwnd, 8, 8);
+    SendMessageW(hwnd, WM_CHAR, L'\r', 0);
+    Expect(record.submit_count == 1, "Enter without Shift submits instead of inserting a newline");
+
+    SendMessageWithShift(hwnd, WM_CHAR, L'\r');
+    wchar_t buffer[64] = {};
+    BetterTextGetText(hwnd, buffer, 64);
+    Expect(std::wstring(buffer) == L"line one\n", "Shift+Enter still inserts a newline");
+
+    DestroyWindow(hwnd);
+}
+
+void NotifyCallbackFiresOnChange() {
+    HWND hwnd = CreateHiddenControl(GetModuleHandleW(nullptr));
+    Expect(hwnd != nullptr, "create hidden control for notify test");
+    if (!hwnd) {
+        return;
+    }
+
+    NotifyRecord record;
+    BetterTextSetNotifyCallback(hwnd, &RecordNotify, &record);
+    BetterTextSetText(hwnd, L"a");
+    BetterTextInsertText(hwnd, L"b");
+    Expect(record.changed_count >= 2, "notify callback fires on SetText and InsertText");
+
+    DestroyWindow(hwnd);
+}
+
+void ContentHeightIsPositiveAndGrowsWithText() {
+    HWND hwnd = CreateHiddenControl(GetModuleHandleW(nullptr));
+    Expect(hwnd != nullptr, "create hidden control for content height test");
+    if (!hwnd) {
+        return;
+    }
+
+    BetterTextSetText(hwnd, L"one line");
+    const float one_line_height = BetterTextGetContentHeight(hwnd);
+    Expect(one_line_height > 0.0f, "content height is positive for non-empty text");
+
+    BetterTextSetText(hwnd, L"one line\ntwo line\nthree line");
+    const float three_line_height = BetterTextGetContentHeight(hwnd);
+    Expect(three_line_height > one_line_height, "content height grows with additional lines");
+
+    DestroyWindow(hwnd);
+}
+
+void PasswordModeLeavesUnderlyingTextIntact() {
+    HWND hwnd = CreateHiddenControl(GetModuleHandleW(nullptr));
+    Expect(hwnd != nullptr, "create hidden control for password mode test");
+    if (!hwnd) {
+        return;
+    }
+
+    BetterTextSetPasswordMode(hwnd, TRUE);
+    BetterTextSetText(hwnd, L"secret");
+    wchar_t buffer[32] = {};
+    BetterTextGetText(hwnd, buffer, 32);
+    Expect(std::wstring(buffer) == L"secret", "password mode masks display only, not the underlying text");
+
+    DestroyWindow(hwnd);
+}
+
+void PlaceholderApiDoesNotCrashWhenEmptyOrPopulated() {
+    HWND hwnd = CreateHiddenControl(GetModuleHandleW(nullptr));
+    Expect(hwnd != nullptr, "create hidden control for placeholder test");
+    if (!hwnd) {
+        return;
+    }
+
+    Expect(BetterTextSetPlaceholder(hwnd, L"Type a message"), "set placeholder");
+    SendMessageW(hwnd, WM_PAINT, 0, 0);
+    BetterTextSetText(hwnd, L"x");
+    SendMessageW(hwnd, WM_PAINT, 0, 0);
+    Expect(BetterTextSetPlaceholder(hwnd, nullptr), "clear placeholder");
+
+    DestroyWindow(hwnd);
+}
+
 } // namespace
 
 int main() {
@@ -152,6 +301,12 @@ int main() {
     EditPreservesImageRuns();
     HiddenControlSmokeTest();
     ShiftUpDownExtendsSelection();
+    SingleLineSuppressesEnterAndFiresSubmit();
+    SubmitOnEnterAllowsShiftNewline();
+    NotifyCallbackFiresOnChange();
+    ContentHeightIsPositiveAndGrowsWithText();
+    PasswordModeLeavesUnderlyingTextIntact();
+    PlaceholderApiDoesNotCrashWhenEmptyOrPopulated();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " BetterText test(s) failed.\n";

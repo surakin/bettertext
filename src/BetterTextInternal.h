@@ -21,9 +21,25 @@ struct ControlState {
     bool read_only = false;
     bool dragging = false;
     float scroll_y = 0.0f;
+    float scroll_x = 0.0f;
     bool vertical_caret_x_valid = false;
     float vertical_caret_x = 0.0f;
     uint64_t next_image_request = 1;
+
+    bool single_line = false;
+    bool submit_on_enter = false;
+    bool password_mode = false;
+    std::wstring placeholder;
+
+    BetterTextNotifyProc notify_callback = nullptr;
+    void* notify_user_data = nullptr;
+
+    // Inline IME composition (WM_IME_COMPOSITION / GCS_COMPSTR) — the
+    // in-progress string is spliced into the rendered layout at the caret
+    // but never touches `document` until GCS_RESULTSTR commits it.
+    bool ime_composing = false;
+    std::wstring ime_composition;
+    int32_t ime_composition_cursor = 0;
 
     BetterTextTheme theme{
         0xffffffff,
@@ -55,6 +71,7 @@ struct ControlState {
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> foreground_brush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selection_brush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caret_brush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> placeholder_brush;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> text_format;
     Microsoft::WRL::ComPtr<IDWriteFontCollection> emoji_font_collection;
 
@@ -71,5 +88,8 @@ void ResetRenderResources(ControlState* state);
 bool CopyStringToBuffer(const std::wstring& value, wchar_t* buffer, int buffer_length, int* copied);
 TextStyle ToInternalStyle(const BetterTextTextStyle* style, const TextStyle& fallback);
 void ToPublicStyle(const TextStyle& style, BetterTextTextStyle* public_style);
+void NotifyChanged(ControlState* state);
+void NotifySubmit(ControlState* state);
+float ComputeContentHeight(ControlState* state);
 
 } // namespace bettertext
