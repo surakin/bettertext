@@ -451,4 +451,9 @@ BOOL BetterTextSetPasswordMode(HWND control, BOOL enabled) {
     return TRUE;
 }
 
+BOOL BetterTextGetCaretRect(HWND control, RECT* out_rect) {
+    ControlState* state = bettertext::GetState(control);
+    return bettertext::GetCaretRect(state, out_rect) ? TRUE : FALSE;
+}
+
 } // extern "C"

@@ -1571,4 +1571,29 @@ float ComputeContentHeight(ControlState* state) {
     return state ? LayoutHeight(state) : 0.0f;
 }
 
+bool GetCaretRect(ControlState* state, RECT* out) {
+    if (!state || !out) {
+        return false;
+    }
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(CreateLayout(state, layout.GetAddressOf())) || !layout) {
+        return false;
+    }
+    const UINT32 caret = static_cast<UINT32>(
+        std::clamp<int64_t>(state->selection.caret, 0, static_cast<int64_t>(state->document.Length())));
+    FLOAT x = 0.0f;
+    FLOAT y = 0.0f;
+    DWRITE_HIT_TEST_METRICS metrics{};
+    if (FAILED(layout->HitTestTextPosition(caret, FALSE, &x, &y, &metrics))) {
+        return false;
+    }
+    const float left = kPadding - state->scroll_x + x;
+    const float top = kPadding - state->scroll_y + y;
+    out->left = static_cast<LONG>(left);
+    out->top = static_cast<LONG>(top);
+    out->right = static_cast<LONG>(left + 1.0f);
+    out->bottom = static_cast<LONG>(top + metrics.height);
+    return true;
+}
+
 } // namespace bettertext

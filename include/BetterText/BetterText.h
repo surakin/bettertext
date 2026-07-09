@@ -122,6 +122,11 @@ BETTERTEXT_API BOOL BetterTextSetPlaceholder(HWND control, const wchar_t* text);
 // document, so undo/redo/copy of the real text still work normally.
 BETTERTEXT_API BOOL BetterTextSetPasswordMode(HWND control, BOOL enabled);
 
+// Bounding rect of the caret (current selection's `caret` endpoint), in
+// client coordinates — for hosts positioning a popup (mention/emoji
+// autocomplete, spellcheck menu, …) relative to the caret.
+BETTERTEXT_API BOOL BetterTextGetCaretRect(HWND control, RECT* out_rect);
+
 #ifdef __cplusplus
 }
 #endif

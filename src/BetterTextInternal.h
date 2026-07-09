@@ -91,5 +91,6 @@ void ToPublicStyle(const TextStyle& style, BetterTextTextStyle* public_style);
 void NotifyChanged(ControlState* state);
 void NotifySubmit(ControlState* state);
 float ComputeContentHeight(ControlState* state);
+bool GetCaretRect(ControlState* state, RECT* out);
 
 } // namespace bettertext
