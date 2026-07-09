@@ -36,6 +36,13 @@ struct ControlState {
     bool show_scrollbar = false;
     std::wstring placeholder;
 
+    // Inset (DIPs) between the control's edges and its text/caret/selection
+    // content. Split per-axis so a host can shrink vertical padding for a
+    // compact single-line row without also tightening the horizontal inset
+    // (see BetterTextSetPadding).
+    float padding_x_dip = 8.0f;
+    float padding_y_dip = 8.0f;
+
     BetterTextNotifyProc notify_callback = nullptr;
     void* notify_user_data = nullptr;
 

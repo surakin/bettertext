@@ -127,6 +127,13 @@ BETTERTEXT_API BOOL BetterTextSetPasswordMode(HWND control, BOOL enabled);
 // autocomplete, spellcheck menu, …) relative to the caret.
 BETTERTEXT_API BOOL BetterTextGetCaretRect(HWND control, RECT* out_rect);
 
+// Inset (DIPs) between the control's edges and its content, split per axis.
+// Defaults to 8/8. Hosts embedding the control in a compact fixed-height row
+// (e.g. a search field) typically want a smaller vertical inset than the
+// default while keeping the horizontal one — see BetterTextGetContentHeight,
+// which reflects whatever vertical_dip is currently set.
+BETTERTEXT_API BOOL BetterTextSetPadding(HWND control, float horizontal_dip, float vertical_dip);
+
 // Off by default (see BetterTextInternal.h for why). When turned off after
 // having been on, any scrollbar Windows already auto-installed is retracted
 // immediately rather than waiting for the next size/paint pass.

@@ -9,8 +9,6 @@
 namespace bettertext {
 namespace {
 
-constexpr float kPadding = 8.0f;
-
 D2D1_COLOR_F Color(uint32_t rgba) {
     return D2D1::ColorF(
         static_cast<float>((rgba >> 24) & 0xff) / 255.0f,
@@ -592,7 +590,7 @@ HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
     }
 
     RECT rect = ClientRect(state->hwnd);
-    const float width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - (kPadding * 2.0f));
+    const float width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - (state->padding_x_dip * 2.0f));
     size_t composition_start = 0;
     size_t composition_len = 0;
     const std::wstring text = ComposedDisplayText(state, &composition_start, &composition_len);
@@ -645,7 +643,7 @@ float LayoutHeight(ControlState* state) {
     if (FAILED(layout->GetMetrics(&metrics))) {
         return 0.0f;
     }
-    return metrics.height + kPadding * 2.0f;
+    return metrics.height + state->padding_y_dip * 2.0f;
 }
 
 void UpdateScrollInfo(ControlState* state) {
@@ -681,8 +679,8 @@ void PaintGdiFallback(ControlState* state) {
     HBRUSH background = CreateSolidBrush(RGB(255, 255, 255));
     FillRect(dc, &rect, background);
     DeleteObject(background);
-    rect.left += static_cast<LONG>(kPadding);
-    rect.top += static_cast<LONG>(kPadding - state->scroll_y);
+    rect.left += static_cast<LONG>(state->padding_x_dip);
+    rect.top += static_cast<LONG>(state->padding_y_dip - state->scroll_y);
     DrawTextW(dc, state->document.PlainText().c_str(), -1, &rect, DT_LEFT | DT_TOP | DT_WORDBREAK);
     EndPaint(state->hwnd, &ps);
 }
@@ -1005,19 +1003,21 @@ void Paint(ControlState* state) {
     if (state->document.Empty() && !state->ime_composing && !state->placeholder.empty() &&
         SUCCEEDED(EnsureTextFormat(state))) {
         RECT rect = ClientRect(state->hwnd);
-        const float width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - (kPadding * 2.0f));
+        const float width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - (state->padding_x_dip * 2.0f));
         Microsoft::WRL::ComPtr<IDWriteTextLayout> placeholder_layout;
         if (SUCCEEDED(state->dwrite_factory->CreateTextLayout(
                 state->placeholder.c_str(), static_cast<UINT32>(state->placeholder.size()),
                 state->text_format.Get(), width, 100000.0f, placeholder_layout.GetAddressOf()))) {
             state->device_context->DrawTextLayout(
-                D2D1::Point2F(kPadding, kPadding), placeholder_layout.Get(), state->placeholder_brush.Get());
+                D2D1::Point2F(state->padding_x_dip, state->padding_y_dip), placeholder_layout.Get(),
+                state->placeholder_brush.Get());
         }
     }
 
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
     if (SUCCEEDED(CreateLayout(state, layout.GetAddressOf())) && layout) {
-        const D2D1_POINT_2F origin = D2D1::Point2F(kPadding - state->scroll_x, kPadding - state->scroll_y);
+        const D2D1_POINT_2F origin =
+            D2D1::Point2F(state->padding_x_dip - state->scroll_x, state->padding_y_dip - state->scroll_y);
 
         if (HasSelection(*state)) {
             const UINT32 start = static_cast<UINT32>(SelectionStart(*state));
@@ -1090,8 +1090,8 @@ int64_t HitTest(ControlState* state, float x, float y) {
     BOOL inside = FALSE;
     DWRITE_HIT_TEST_METRICS metrics{};
     const HRESULT hr = layout->HitTestPoint(
-        x - kPadding + state->scroll_x,
-        y - kPadding + state->scroll_y,
+        x - state->padding_x_dip + state->scroll_x,
+        y - state->padding_y_dip + state->scroll_y,
         &trailing,
         &inside,
         &metrics);
@@ -1114,7 +1114,8 @@ void EnsureCaretVisibleHorizontally(ControlState* state) {
         return;
     }
     RECT rect = ClientRect(state->hwnd);
-    const float visible_width = std::max(1.0f, static_cast<float>(rect.right - rect.left) - kPadding * 2.0f);
+    const float visible_width =
+        std::max(1.0f, static_cast<float>(rect.right - rect.left) - state->padding_x_dip * 2.0f);
     const UINT32 caret = static_cast<UINT32>(
         std::clamp<int64_t>(state->selection.caret, 0, static_cast<int64_t>(state->document.Length())));
     FLOAT x = 0.0f;
@@ -1444,8 +1445,8 @@ void UpdateImeCompositionWindowPos(ControlState* state) {
     }
     COMPOSITIONFORM form{};
     form.dwStyle = CFS_POINT;
-    form.ptCurrentPos.x = static_cast<LONG>(kPadding - state->scroll_x + x);
-    form.ptCurrentPos.y = static_cast<LONG>(kPadding - state->scroll_y + y);
+    form.ptCurrentPos.x = static_cast<LONG>(state->padding_x_dip - state->scroll_x + x);
+    form.ptCurrentPos.y = static_cast<LONG>(state->padding_y_dip - state->scroll_y + y);
     ImmSetCompositionWindow(context, &form);
     ImmReleaseContext(state->hwnd, context);
 }
@@ -1700,8 +1701,8 @@ bool GetCaretRect(ControlState* state, RECT* out) {
     if (FAILED(layout->HitTestTextPosition(caret, FALSE, &x, &y, &metrics))) {
         return false;
     }
-    const float left = kPadding - state->scroll_x + x;
-    const float top = kPadding - state->scroll_y + y;
+    const float left = state->padding_x_dip - state->scroll_x + x;
+    const float top = state->padding_y_dip - state->scroll_y + y;
     out->left = static_cast<LONG>(left);
     out->top = static_cast<LONG>(top);
     out->right = static_cast<LONG>(left + 1.0f);

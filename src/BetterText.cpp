@@ -460,6 +460,17 @@ BOOL BetterTextGetCaretRect(HWND control, RECT* out_rect) {
     return bettertext::GetCaretRect(state, out_rect) ? TRUE : FALSE;
 }
 
+BOOL BetterTextSetPadding(HWND control, float horizontal_dip, float vertical_dip) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state) {
+        return FALSE;
+    }
+    state->padding_x_dip = horizontal_dip;
+    state->padding_y_dip = vertical_dip;
+    bettertext::InvalidateBetterText(state);
+    return TRUE;
+}
+
 BOOL BetterTextSetScrollBarVisible(HWND control, BOOL visible) {
     ControlState* state = bettertext::GetState(control);
     if (!state) {
