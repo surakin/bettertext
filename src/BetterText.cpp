@@ -472,4 +472,59 @@ BOOL BetterTextSetScrollBarVisible(HWND control, BOOL visible) {
     return TRUE;
 }
 
+int BetterTextGetImageRunCount(HWND control) {
+    ControlState* state = bettertext::GetState(control);
+    return state ? static_cast<int>(state->document.ImageAtoms().size()) : 0;
+}
+
+int BetterTextGetImageRunUriLength(HWND control, int index) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state || index < 0) {
+        return 0;
+    }
+    auto atoms = state->document.ImageAtoms();
+    return static_cast<size_t>(index) < atoms.size()
+               ? static_cast<int>(atoms[static_cast<size_t>(index)].uri.size())
+               : 0;
+}
+
+int BetterTextGetImageRunUri(HWND control, int index, wchar_t* buffer, int buffer_length) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state || index < 0) {
+        return 0;
+    }
+    auto atoms = state->document.ImageAtoms();
+    if (static_cast<size_t>(index) >= atoms.size()) {
+        return 0;
+    }
+    int copied = 0;
+    bettertext::CopyStringToBuffer(atoms[static_cast<size_t>(index)].uri, buffer, buffer_length, &copied);
+    return copied;
+}
+
+int BetterTextGetImageRunAltTextLength(HWND control, int index) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state || index < 0) {
+        return 0;
+    }
+    auto atoms = state->document.ImageAtoms();
+    return static_cast<size_t>(index) < atoms.size()
+               ? static_cast<int>(atoms[static_cast<size_t>(index)].alt_text.size())
+               : 0;
+}
+
+int BetterTextGetImageRunAltText(HWND control, int index, wchar_t* buffer, int buffer_length) {
+    ControlState* state = bettertext::GetState(control);
+    if (!state || index < 0) {
+        return 0;
+    }
+    auto atoms = state->document.ImageAtoms();
+    if (static_cast<size_t>(index) >= atoms.size()) {
+        return 0;
+    }
+    int copied = 0;
+    bettertext::CopyStringToBuffer(atoms[static_cast<size_t>(index)].alt_text, buffer, buffer_length, &copied);
+    return copied;
+}
+
 } // extern "C"

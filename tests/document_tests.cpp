@@ -62,6 +62,40 @@ void EditPreservesImageRuns() {
     Expect(document.ToJson().find(L"file:///image.png") != std::wstring::npos, "delete text preserves image run");
 }
 
+void ImageAtomsMatchesPlainTextPlaceholderPositions() {
+    bettertext::Document document;
+    document.SetPlainText(L"AB");
+    document.InsertImage(1, L"mxc://one", L":one:", 24.0f, 24.0f);
+    // PlainText() is now "A" + FFFC + "B" -> the image atom sits at index 1.
+    auto atoms = document.ImageAtoms();
+    Expect(atoms.size() == 1, "one image run reports one atom");
+    if (atoms.size() == 1) {
+        Expect(atoms[0].atom_index == 1, "image atom index matches its FFFC position in PlainText()");
+        Expect(atoms[0].uri == L"mxc://one", "image atom carries its uri");
+        Expect(atoms[0].alt_text == L":one:", "image atom carries its alt text");
+    }
+
+    document.InsertImage(0, L"mxc://two", L":two:", 24.0f, 24.0f);
+    // PlainText() is now FFFC + "A" + FFFC + "B".
+    atoms = document.ImageAtoms();
+    Expect(atoms.size() == 2, "two image runs report two atoms");
+    if (atoms.size() == 2) {
+        Expect(atoms[0].atom_index == 0, "first image atom index accounts for the earlier insert");
+        Expect(atoms[0].uri == L"mxc://two", "atoms stay in document order, not insertion order");
+        Expect(atoms[1].atom_index == 2, "second image atom index shifts by the first image's one atom");
+        Expect(atoms[1].uri == L"mxc://one", "second atom still carries its original uri");
+    }
+
+    document.DeleteRange(0, 1);
+    // Deleting the first FFFC leaves "A" + FFFC + "B".
+    atoms = document.ImageAtoms();
+    Expect(atoms.size() == 1, "deleting one image run leaves the other intact");
+    if (atoms.size() == 1) {
+        Expect(atoms[0].uri == L"mxc://one", "surviving atom is the one that wasn't deleted");
+        Expect(atoms[0].atom_index == 1, "surviving atom's index shifts down after the earlier deletion");
+    }
+}
+
 void HiddenControlSmokeTest() {
     HINSTANCE instance = GetModuleHandleW(nullptr);
     Expect(BetterTextRegisterControl(instance), "register control");
@@ -299,6 +333,7 @@ int main() {
     JsonRoundTrip();
     HtmlRoundTrip();
     EditPreservesImageRuns();
+    ImageAtomsMatchesPlainTextPlaceholderPositions();
     HiddenControlSmokeTest();
     ShiftUpDownExtendsSelection();
     SingleLineSuppressesEnterAndFiresSubmit();

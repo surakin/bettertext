@@ -132,6 +132,17 @@ BETTERTEXT_API BOOL BetterTextGetCaretRect(HWND control, RECT* out_rect);
 // immediately rather than waiting for the next size/paint pass.
 BETTERTEXT_API BOOL BetterTextSetScrollBarVisible(HWND control, BOOL visible);
 
+// Image runs (inserted via BetterTextInsertImageUri), in document order —
+// for hosts reconstructing a structured representation of the document
+// (e.g. Tesseract's composer_draft()) that need each image's uri/alt text
+// without being able to see BetterText's internal Document/Atom types.
+// Same get-length-then-get-value pattern as BetterTextGetText/GetHtml/etc.
+BETTERTEXT_API int BetterTextGetImageRunCount(HWND control);
+BETTERTEXT_API int BetterTextGetImageRunUriLength(HWND control, int index);
+BETTERTEXT_API int BetterTextGetImageRunUri(HWND control, int index, wchar_t* buffer, int buffer_length);
+BETTERTEXT_API int BetterTextGetImageRunAltTextLength(HWND control, int index);
+BETTERTEXT_API int BetterTextGetImageRunAltText(HWND control, int index, wchar_t* buffer, int buffer_length);
+
 #ifdef __cplusplus
 }
 #endif

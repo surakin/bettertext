@@ -627,7 +627,7 @@ HRESULT CreateLayout(ControlState* state, IDWriteTextLayout** layout) {
             }
             auto* inline_object = new BetterTextInlineImage(
                 state->device_context.Get(), found->second.Get(), info.display_width, info.display_height);
-            (*layout)->SetInlineObject(DWRITE_TEXT_RANGE{ static_cast<UINT32>(index), 1 }, inline_object);
+            (*layout)->SetInlineObject(inline_object, DWRITE_TEXT_RANGE{ static_cast<UINT32>(index), 1 });
             inline_object->Release();  // SetInlineObject took its own reference
         }
     }
