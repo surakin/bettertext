@@ -1,0 +1,62 @@
+#pragma once
+
+#include "BetterText/BetterText.h"
+#include "BetterTextDocument.h"
+
+#include <d2d1.h>
+#include <dwrite.h>
+#include <map>
+#include <string>
+#include <vector>
+#include <wrl/client.h>
+
+namespace bettertext {
+
+struct ControlState {
+    HWND hwnd = nullptr;
+    Document document;
+    BetterTextSelection selection{ 0, 0 };
+    bool read_only = false;
+    bool dragging = false;
+    float scroll_y = 0.0f;
+    uint64_t next_image_request = 1;
+
+    BetterTextTheme theme{
+        0xffffffff,
+        0x111111ff,
+        0x0067c0aa,
+        0x111111ff,
+        0x777777ff,
+    };
+
+    TextStyle default_style;
+
+    IBetterTextImageProvider* image_provider = nullptr;
+    IBetterTextClipboardAdapter* clipboard_adapter = nullptr;
+    IBetterTextFontProvider* font_provider = nullptr;
+
+    std::vector<Document> undo_stack;
+    std::vector<Document> redo_stack;
+
+    Microsoft::WRL::ComPtr<ID2D1Factory> d2d_factory;
+    Microsoft::WRL::ComPtr<IDWriteFactory> dwrite_factory;
+    Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> render_target;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> foreground_brush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selection_brush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caret_brush;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> text_format;
+
+    void PushUndo();
+    void ClearRedo();
+    void ClampSelection();
+};
+
+ControlState* GetState(HWND hwnd);
+BOOL RegisterBetterTextControl(HINSTANCE instance);
+void InvalidateBetterText(ControlState* state);
+void ResetRenderResources(ControlState* state);
+bool CopyStringToBuffer(const std::wstring& value, wchar_t* buffer, int buffer_length, int* copied);
+TextStyle ToInternalStyle(const BetterTextTextStyle* style, const TextStyle& fallback);
+void ToPublicStyle(const TextStyle& style, BetterTextTextStyle* public_style);
+
+} // namespace bettertext
