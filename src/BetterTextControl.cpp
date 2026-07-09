@@ -539,9 +539,11 @@ public:
 
     HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT origin_x, FLOAT origin_y, BOOL, BOOL,
                                     IUnknown*) override {
+        // Match the color-emoji glyph path (DrawBitmapColorGlyphRun below) so
+        // custom-emoji images and Unicode color emoji scale identically.
         context_->DrawBitmap(
             bitmap_.Get(), D2D1::RectF(origin_x, origin_y, origin_x + width_, origin_y + height_), 1.0f,
-            D2D1_INTERPOLATION_MODE_LINEAR, nullptr);
+            D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr);
         return S_OK;
     }
 
