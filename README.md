@@ -27,6 +27,13 @@ ctest --test-dir build -C Debug --output-on-failure
 
 BetterText currently targets Windows 10+ and requires Visual Studio Build Tools or another MSVC-compatible Windows C++ toolchain.
 
+## License
+
+BetterText is licensed under the [MIT License](LICENSE).
+
+The bundled Noto Color Emoji font is licensed separately under the SIL Open
+Font License 1.1. See [`third_party/fonts/NotoEmoji-LICENSE`](third_party/fonts/NotoEmoji-LICENSE).
+
 ## Current Limits
 
 This is the foundation slice, not a complete replacement for every RichEdit behavior yet. Full TSF `ITextStoreACP`, UI Automation TextPattern, DirectWrite inline object rendering for actual image layout, rich styling commands, and production-grade HTML import are the next major pieces.
