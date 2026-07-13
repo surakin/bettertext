@@ -9,12 +9,14 @@
 namespace {
 
 constexpr int kEditorId = 1001;
+constexpr int kPasswordId = 1002;
 constexpr int kInsertImageId = 40001;
 constexpr int kJsonRoundTripId = 40002;
 constexpr int kHtmlRoundTripId = 40003;
 constexpr int kReadOnlyId = 40004;
 
 HWND g_editor = nullptr;
+HWND g_password = nullptr;
 bool g_read_only = false;
 
 class SingleFileFontEnumerator final : public IDWriteFontFileEnumerator {
@@ -280,6 +282,23 @@ void RoundTripHtml(HWND owner) {
 LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case WM_CREATE:
+        g_password = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            BETTERTEXT_CLASS_NAME,
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0,
+            0,
+            0,
+            0,
+            hwnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPasswordId)),
+            reinterpret_cast<LPCREATESTRUCTW>(lparam)->hInstance,
+            nullptr);
+        BetterTextSetSingleLine(g_password, TRUE);
+        BetterTextSetPasswordMode(g_password, TRUE);
+        BetterTextSetPlaceholder(g_password, L"Password (characters are masked)");
+
         g_editor = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             BETTERTEXT_CLASS_NAME,
@@ -297,8 +316,27 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
         PopulateEditor(g_editor);
         return 0;
     case WM_SIZE:
-        if (g_editor) {
-            MoveWindow(g_editor, 0, 0, LOWORD(lparam), HIWORD(lparam), TRUE);
+        if (g_password && g_editor) {
+            constexpr int margin = 12;
+            constexpr int password_height = 40;
+            constexpr int gap = 12;
+            const int width = LOWORD(lparam);
+            const int height = HIWORD(lparam);
+            MoveWindow(
+                g_password,
+                margin,
+                margin,
+                (width > margin * 2) ? width - margin * 2 : 0,
+                password_height,
+                TRUE);
+            const int editor_top = margin + password_height + gap;
+            MoveWindow(
+                g_editor,
+                0,
+                editor_top,
+                width,
+                (height > editor_top) ? height - editor_top : 0,
+                TRUE);
         }
         return 0;
     case WM_COMMAND:
