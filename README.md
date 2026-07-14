@@ -6,7 +6,7 @@ This first implementation provides:
 
 - A reusable `bettertext` static library target.
 - A custom `HWND` control registered as `BETTERTEXT_CLASS_NAME`.
-- Public APIs for text, JSON, HTML, selection, undo/redo, read-only mode, theme, and default text style.
+- Public APIs for text, JSON, HTML, selection, undo/redo, read-only mode, theme, and default/per-range text styles.
 - A paragraph/run document model with inline URI-backed image attachment runs.
 - DirectWrite/Direct2D rendering for text, caret, and selection.
 - Keyboard and mouse editing, Unicode clipboard text, scrolling, and basic IME committed text handling.

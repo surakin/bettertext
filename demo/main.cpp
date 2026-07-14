@@ -3,6 +3,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <string_view>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -231,14 +232,34 @@ void ConfigureEditorFonts(HWND editor) {
     }
 }
 
+void ApplyDoubleSizeEmojiStyle(HWND editor, const std::wstring& text, std::wstring_view emoji) {
+    const size_t position = text.find(emoji);
+    if (position == std::wstring::npos) {
+        return;
+    }
+
+    BetterTextTextStyle style{};
+    if (!BetterTextGetDefaultTextStyle(editor, &style)) {
+        return;
+    }
+    style.font_size *= 2.0f;
+    BetterTextSetTextStyle(
+        editor,
+        static_cast<int64_t>(position),
+        static_cast<int64_t>(emoji.size()),
+        &style);
+}
+
 void PopulateEditor(HWND editor) {
-    const wchar_t* intro =
-        L"BetterText demo\r\n"
-        L"\r\n"
-        L"This is a native Win32 custom control using DirectWrite and Direct2D.\r\n"
-        L"Try typing, selecting, copying, pasting, undoing, and using an IME.\r\n"
-        L"Emoji fallback smoke test: \U0001f642 \U0001f680\r\n";
-    BetterTextSetText(editor, intro);
+    const std::wstring intro =
+        L"BetterText demo\n"
+        L"\n"
+        L"This is a native Win32 custom control using DirectWrite and Direct2D.\n"
+        L"Try typing, selecting, copying, pasting, undoing, and using an IME.\n"
+        L"Emoji fallback smoke test: \U0001f642 \U0001f680\n";
+    BetterTextSetText(editor, intro.c_str());
+    ApplyDoubleSizeEmojiStyle(editor, intro, L"\U0001f642");
+    ApplyDoubleSizeEmojiStyle(editor, intro, L"\U0001f680");
     BetterTextSetSelection(editor, BetterTextGetTextLength(editor), BetterTextGetTextLength(editor));
     BetterTextInsertImageUri(editor, L"file:///C:/Images/bettertext-sample.png", L"Sample image URI", 120.0f, 90.0f);
 }
