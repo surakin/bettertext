@@ -170,19 +170,65 @@ HRESULT CreateSwapChain(ControlState* state) {
     desc.BufferCount = 2;
     desc.Scaling = DXGI_SCALING_STRETCH;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    // PREMULTIPLIED (not IGNORE) so the control's alpha genuinely composites
+    // over whatever the host window painted underneath via DirectComposition
+    // below, instead of always rendering opaque regardless of
+    // theme.background_rgba's alpha byte.
+    desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
 
-    hr = factory->CreateSwapChainForHwnd(
+    // CreateSwapChainForHwnd rejects any AlphaMode other than UNSPECIFIED/
+    // IGNORE (DXGI_ERROR_INVALID_CALL) — PREMULTIPLIED/STRAIGHT are only
+    // accepted by CreateSwapChainForComposition, which produces a swap chain
+    // with no HWND of its own; presentation happens entirely through the
+    // DirectComposition visual tree bound below via CreateTargetForHwnd.
+    state->swap_chain.Reset();
+    hr = factory->CreateSwapChainForComposition(
         state->d3d_device.Get(),
-        state->hwnd,
         &desc,
         nullptr,
-        nullptr,
         state->swap_chain.GetAddressOf());
-    if (SUCCEEDED(hr)) {
-        factory->MakeWindowAssociation(state->hwnd, DXGI_MWA_NO_ALT_ENTER);
+    if (FAILED(hr)) {
+        return hr;
     }
-    return hr;
+
+    // Bind the swap chain into a DirectComposition visual tree so its
+    // premultiplied alpha actually blends with the parent window instead of
+    // being discarded by DWM's own (opaque) redirection surface for the
+    // HWND — the host must create this HWND with WS_EX_NOREDIRECTIONBITMAP
+    // for that surface to not exist in the first place. Device/target/visual
+    // are created once and reused; only SetContent() needs to run again
+    // after a swap chain recreation (e.g. following device loss).
+    if (!state->composition_device) {
+        hr = DCompositionCreateDevice(
+            state->dxgi_device.Get(),
+            __uuidof(IDCompositionDevice),
+            reinterpret_cast<void**>(state->composition_device.GetAddressOf()));
+        if (FAILED(hr)) {
+            return hr;
+        }
+    }
+    if (!state->composition_target) {
+        hr = state->composition_device->CreateTargetForHwnd(
+            state->hwnd, TRUE, state->composition_target.GetAddressOf());
+        if (FAILED(hr)) {
+            return hr;
+        }
+    }
+    if (!state->composition_visual) {
+        hr = state->composition_device->CreateVisual(state->composition_visual.GetAddressOf());
+        if (FAILED(hr)) {
+            return hr;
+        }
+        hr = state->composition_target->SetRoot(state->composition_visual.Get());
+        if (FAILED(hr)) {
+            return hr;
+        }
+    }
+    hr = state->composition_visual->SetContent(state->swap_chain.Get());
+    if (FAILED(hr)) {
+        return hr;
+    }
+    return state->composition_device->Commit();
 }
 
 HRESULT CreateTargetBitmap(ControlState* state) {
@@ -195,9 +241,13 @@ HRESULT CreateTargetBitmap(ControlState* state) {
     const float dpi = static_cast<float>(GetDpiForWindow(state->hwnd));
     state->device_context->SetDpi(dpi, dpi);
 
+    // PREMULTIPLIED matches the swap chain's DXGI_ALPHA_MODE_PREMULTIPLIED
+    // (see CreateSwapChain) — D2D still accepts straight-alpha brush/Clear
+    // colors and writes correctly premultiplied pixels; this only describes
+    // the storage format DirectComposition composites against.
     const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(
         D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
         dpi,
         dpi);
     hr = state->device_context->CreateBitmapFromDxgiSurface(
@@ -1826,6 +1876,12 @@ void ResetRenderResources(ControlState* state) {
     state->device_context.Reset();
     state->d2d_device.Reset();
     state->swap_chain.Reset();
+    // Tied to the adapter behind dxgi_device — reset alongside it so a full
+    // device-removed/reset recreates the whole composition chain from
+    // scratch instead of reusing a visual/target bound to a dead device.
+    state->composition_visual.Reset();
+    state->composition_target.Reset();
+    state->composition_device.Reset();
     state->dxgi_device.Reset();
     state->d3d_device.Reset();
 }
