@@ -5,7 +5,6 @@
 
 #include <d2d1_3.h>
 #include <d3d11_1.h>
-#include <dcomp.h>
 #include <dwrite_3.h>
 #include <dxgi1_2.h>
 #include <map>
@@ -79,14 +78,6 @@ struct ControlState {
     Microsoft::WRL::ComPtr<ID2D1DeviceContext> device_context;
     Microsoft::WRL::ComPtr<ID2D1DeviceContext4> device_context4;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> target_bitmap;
-    // DirectComposition trio compositing the swap chain's premultiplied
-    // alpha over whatever the parent HWND already painted, so a caller can
-    // set theme.background_rgba's alpha to 0 for a genuinely transparent
-    // control instead of an opaque solid-color clear. Bound to `hwnd`;
-    // recreated lazily alongside the swap chain in CreateSwapChain().
-    Microsoft::WRL::ComPtr<IDCompositionDevice> composition_device;
-    Microsoft::WRL::ComPtr<IDCompositionTarget> composition_target;
-    Microsoft::WRL::ComPtr<IDCompositionVisual> composition_visual;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwrite_factory;
     Microsoft::WRL::ComPtr<IDWriteFactory4> dwrite_factory4;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> foreground_brush;

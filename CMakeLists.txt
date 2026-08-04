@@ -38,7 +38,6 @@ target_link_libraries(bettertext
     PUBLIC
         d2d1
         d3d11
-        dcomp
         dwrite
         dxgi
         windowscodecs
